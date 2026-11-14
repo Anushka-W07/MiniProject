@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.idea/
+.vscode/
+.DS_Store
+# real datasets are large: download them yourself (see data/README.md)
+data/raw/
