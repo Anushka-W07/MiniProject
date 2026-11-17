@@ -5,7 +5,7 @@ Pipeline (as in the synopsis / Phase-I report):
   clean broken rows -> Min-Max Scaling -> Isolation Forest learns the healthy pattern
   -> System Health Score (0-100%) -> automatic warning checklist.
 
-Run:      python astrosense_app.py
+Run:      python main.py
 Install:  pip install pandas scikit-learn numpy
 """
 import os
@@ -19,22 +19,27 @@ import pandas as pd
 from .backend import *  # noqa: F401,F403  (FIELDS, FBY, Detector, clean, simulate, ...)
 
 # ---------------------------------------------------------------- palette / fonts
-BG, PANEL, PANEL2, PANEL3, LINE = "#070a13", "#10131f", "#141a2c", "#1a2036", "#232a42"
-INK, INK_DIM = "#e8ebf5", "#8891ab"
-ACCENT, ACCENT_HOVER = "#7c8cff", "#909ffc"
-OK, WARN, DANGER = "#35d0ba", "#f2a93b", "#ff5c7a"
-FONT_TITLE = ("Segoe UI", 19, "bold")
+BG, PANEL, PANEL2, PANEL3, LINE = "#0b0e17", "#121623", "#171c2e", "#1f2539", "#272f48"
+INK, INK_DIM = "#eceff7", "#8b93ad"
+ACCENT, ACCENT_HOVER = "#6c7dff", "#8391ff"
+OK, WARN, DANGER = "#34d3b0", "#f2a93b", "#ff5c7a"
+DANGER_BG, INSIGHT_BG = "#2a1722", "#141a33"
+FONT_TITLE = ("Segoe UI", 20, "bold")
 FONT_SUB = ("Segoe UI", 10)
 FONT_H = ("Segoe UI", 12, "bold")
 FONT_B = ("Segoe UI", 10)
+FONT_BOLD = ("Segoe UI", 10, "bold")
 FONT_SMALL = ("Segoe UI", 9)
+FONT_CAP = ("Segoe UI", 8, "bold")
 FONT_MONO = ("Consolas", 10)
 
 GROUPS = [
-    ("power", "Power System", "\u26A1"), ("propulsion", "Propulsion", "\U0001F525"),
-    ("avionics", "Avionics", "\U0001F9E0"), ("cabin", "Cabin & Life Support", "\U0001FAE7"),
-    ("attitude", "Attitude & Motion", "\U0001F3AF"), ("environment", "Space Environment", "\u2622"),
+    ("power", "Power System", ""), ("propulsion", "Propulsion", ""),
+    ("avionics", "Avionics", ""), ("cabin", "Cabin & Life Support", ""),
+    ("attitude", "Attitude & Motion", ""), ("environment", "Space Environment", ""),
 ]
+TAB_LABELS = {"power": "Power", "propulsion": "Propulsion", "avionics": "Avionics",
+              "cabin": "Cabin", "attitude": "Attitude", "environment": "Environment"}
 
 # short name of each measuring unit (the bottom box shows the units of the tab you are on)
 UNIT_NAMES = {
@@ -47,10 +52,15 @@ UNIT_NAMES = {
 def units_text(group=None):
     """'V - Volts     W - Watts' for one tab's group, or every unit when group is None (Data tab)."""
     units = dict.fromkeys(f["unit"] for f in FIELDS if group in (None, f["group"]))
-    return "     ".join(f"{u} - {UNIT_NAMES.get(u, u)}" for u in units)
+    return "   \u00B7   ".join(f"{u} - {UNIT_NAMES.get(u, u)}" for u in units)
 
 
 # ---------------------------------------------------------------- widgets
+def caption(parent, text, bg=BG, **pack):
+    """Small upper-case section caption."""
+    tk.Label(parent, text=text.upper(), bg=bg, fg=INK_DIM, font=FONT_CAP).pack(anchor="w", **pack)
+
+
 class Tooltip:
     def __init__(self, widget, text):
         self.widget, self.text, self.tip = widget, text, None
@@ -74,6 +84,7 @@ class Tooltip:
 
 class HoverButton(tk.Button):
     def __init__(self, master, bg, hover_bg, fg="white", **kw):
+        kw.setdefault("font", FONT_B)
         super().__init__(master, bg=bg, fg=fg, activebackground=hover_bg, activeforeground=fg,
                          relief="flat", bd=0, cursor="hand2", **kw)
         self.bind("<Enter>", lambda e: self.configure(bg=hover_bg))
@@ -94,8 +105,8 @@ class RoundGauge(tk.Canvas):
         if value > 0:
             self.create_arc(pad, pad, s - pad, s - pad, start=90, extent=-3.6 * value,
                             outline=color, width=10, style="arc")
-        self.create_text(s / 2, s / 2 - 6, text=f"{value}%", fill=INK, font=("Segoe UI", 18, "bold"))
-        self.create_text(s / 2, s / 2 + 16, text="health", fill=INK_DIM, font=FONT_SMALL)
+        self.create_text(s / 2, s / 2 - 6, text=f"{value}%", fill=INK, font=("Segoe UI", 20, "bold"))
+        self.create_text(s / 2, s / 2 + 18, text="health", fill=INK_DIM, font=FONT_SMALL)
 
     def animate_to(self, target, color, steps=18):
         start = self.value
@@ -132,10 +143,16 @@ class AstroSense(tk.Tk):
     def _build_style(self):
         st = ttk.Style(self)
         st.theme_use("clam")
-        st.configure("TNotebook", background=PANEL, borderwidth=0)
-        st.configure("TNotebook.Tab", background=PANEL2, foreground=INK_DIM, padding=(12, 8),
-                     font=("Segoe UI", 10, "bold"), borderwidth=0)
-        st.map("TNotebook.Tab", background=[("selected", ACCENT)], foreground=[("selected", "white")])
+        st.configure("TNotebook", background=PANEL, borderwidth=0, tabmargins=(0, 0, 0, 0))
+        st.configure("TNotebook.Tab", background=PANEL, foreground=INK_DIM, padding=(13, 8),
+                     font=FONT_BOLD, borderwidth=0)
+        st.map("TNotebook.Tab", background=[("selected", ACCENT), ("active", PANEL3)],
+               foreground=[("selected", "white"), ("active", INK)])
+        st.configure("Dark.TSpinbox", fieldbackground=BG, background=PANEL3, foreground=INK,
+                     arrowcolor=INK_DIM, bordercolor=LINE, lightcolor=LINE, darkcolor=LINE,
+                     insertcolor=INK, padding=3)
+        st.configure("Vertical.TScrollbar", background=PANEL3, troughcolor=BG, bordercolor=BG,
+                     arrowcolor=INK_DIM, lightcolor=PANEL3, darkcolor=PANEL3)
 
     def _build_menu(self):
         bar = tk.Menu(self)
@@ -175,19 +192,26 @@ class AstroSense(tk.Tk):
     # ---------- layout ----------
     def _build_layout(self):
         head = tk.Frame(self, bg=BG)
-        head.pack(fill="x", padx=22, pady=(16, 6))
-        tk.Label(head, text="\U0001F6F0  AstroSense", bg=BG, fg=INK, font=FONT_TITLE).pack(side="left")
-        tk.Label(head, text="   Isolation Forest diagnostics for spacecraft telemetry", bg=BG, fg=INK_DIM,
-                 font=FONT_SUB).pack(side="left")
+        head.pack(fill="x", padx=24, pady=(18, 12))
+        logo = tk.Canvas(head, width=34, height=34, bg=BG, highlightthickness=0)
+        logo.create_oval(3, 3, 31, 31, outline=ACCENT, width=2)
+        logo.create_oval(12, 12, 22, 22, fill=ACCENT, outline="")
+        logo.pack(side="left", padx=(0, 12))
+        titles = tk.Frame(head, bg=BG)
+        titles.pack(side="left")
+        tk.Label(titles, text="AstroSense", bg=BG, fg=INK, font=FONT_TITLE).pack(anchor="w")
+        tk.Label(titles, text="Isolation Forest diagnostics for spacecraft telemetry", bg=BG, fg=INK_DIM,
+                 font=FONT_SUB).pack(anchor="w")
         self.clock_lbl = tk.Label(head, bg=BG, fg=INK_DIM, font=FONT_MONO)
         self.clock_lbl.pack(side="right")
         dot = tk.Canvas(head, width=10, height=10, bg=BG, highlightthickness=0)
         dot.create_oval(1, 1, 9, 9, fill=OK, outline="")
         dot.pack(side="right", padx=8)
+        tk.Frame(self, bg=LINE, height=1).pack(fill="x", padx=24)
 
         self._build_units_footer()
         body = tk.Frame(self, bg=BG)
-        body.pack(fill="both", expand=True, padx=22, pady=6)
+        body.pack(fill="both", expand=True, padx=24, pady=(14, 10))
         body.columnconfigure(0, weight=6)
         body.columnconfigure(1, weight=5)
         body.rowconfigure(0, weight=1)
@@ -195,101 +219,120 @@ class AstroSense(tk.Tk):
         self._build_result_panel(body)
 
     def _build_units_footer(self):
-        """White-on-dark box at the bottom: units used on the tab that is open."""
+        """Box at the bottom: measuring units used on the tab that is open."""
         foot = tk.Frame(self, bg=PANEL, highlightthickness=1, highlightbackground=LINE)
-        foot.pack(side="bottom", fill="x", padx=22, pady=(0, 8))
-        self.units_lbl = tk.Label(foot, bg=PANEL, fg=INK, font=("Segoe UI", 9, "bold"), anchor="w", justify="left")
-        self.units_lbl.pack(fill="x", padx=12, pady=4)
+        foot.pack(side="bottom", fill="x", padx=24, pady=(0, 16))
+        tk.Label(foot, text="UNITS", bg=PANEL, fg=ACCENT, font=FONT_CAP).pack(side="left", anchor="n",
+                                                                           padx=(14, 12), pady=(10, 0))
+        self.units_lbl = tk.Label(foot, bg=PANEL, fg=INK, font=FONT_SMALL, anchor="w", justify="left",
+                                  wraplength=900)
+        self.units_lbl.pack(side="left", fill="x", expand=True, padx=(0, 14), pady=8)
+        foot.bind("<Configure>", lambda e: self.units_lbl.configure(wraplength=max(200, e.width - 110)))
 
     def _update_units(self, _=None):
         i = self.nb.index(self.nb.select())
-        self.units_lbl.configure(text="Units: open a sensor tab (Power, Propulsion, ...) to see its units."
-                                 if i == 0 else "Units:   " + units_text(GROUPS[i - 1][0]))
+        self.units_lbl.configure(text="Open a sensor tab (Power, Propulsion, ...) to see its measuring units."
+                                 if i == 0 else units_text(GROUPS[i - 1][0]))
 
     def _build_input_panel(self, parent):
         left = tk.Frame(parent, bg=PANEL, highlightthickness=1, highlightbackground=LINE)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        tk.Label(left, text="Telemetry Input", bg=PANEL, fg=INK, font=FONT_H).pack(anchor="w", padx=16, pady=(14, 2))
-        tk.Label(left, text="Data tab: train on healthy data and upload a log.  Other tabs: check a single manual reading.",
-                 bg=PANEL, fg=INK_DIM, font=FONT_SMALL).pack(anchor="w", padx=16, pady=(0, 6))
-        tk.Label(left, text="Enter runs diagnostics: on the Data tab it checks the uploaded log, on other tabs the manual reading.",
-                 bg=PANEL, fg=INK_DIM, font=FONT_SMALL).pack(side="bottom", anchor="w", padx=16, pady=(0, 6))
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        tk.Label(left, text="Telemetry Input", bg=PANEL, fg=INK, font=FONT_H).pack(anchor="w", padx=18, pady=(16, 2))
+        sub = tk.Label(left, text="Data tab: train on healthy data and check an uploaded log.   "
+                                  "Sensor tabs: check a single manual reading.",
+                       bg=PANEL, fg=INK_DIM, font=FONT_SMALL, justify="left", wraplength=560)
+        sub.pack(anchor="w", padx=18, pady=(0, 8))
+        left.bind("<Configure>", lambda e: sub.configure(wraplength=max(200, e.width - 40)))
+        tk.Label(left, text="Press Enter to run diagnostics for the open tab.", bg=PANEL, fg=INK_DIM,
+                 font=FONT_SMALL).pack(side="bottom", anchor="w", padx=18, pady=(0, 12))
         btns = tk.Frame(left, bg=PANEL)
-        btns.pack(side="bottom", fill="x", padx=16, pady=(6, 4))
-        HoverButton(btns, ACCENT, ACCENT_HOVER, text="\u25B6  Run Diagnostics", font=("Segoe UI", 10, "bold"),
-                    padx=16, pady=9, command=self.run_diagnostics).pack(side="left", padx=(0, 8))
-        for txt, cmd in (("\u21BA  Nominal Sample", self.load_sample), ("\u26A0  Simulate Fault", self.load_fault),
-                         ("\u2715  Clear", self.clear_all)):
-            HoverButton(btns, PANEL3, LINE, text=txt, padx=12, pady=9, command=cmd).pack(side="left", padx=(0, 8))
+        btns.pack(side="bottom", fill="x", padx=18, pady=(10, 8))
+        tk.Frame(left, bg=LINE, height=1).pack(side="bottom", fill="x")
+        HoverButton(btns, ACCENT, ACCENT_HOVER, text="Run Diagnostics", font=FONT_BOLD,
+                    padx=18, pady=9, command=self.run_diagnostics).pack(side="left", padx=(0, 10))
+        for txt, cmd in (("Nominal Sample", self.load_sample), ("Simulate Fault", self.load_fault),
+                         ("Clear", self.clear_all)):
+            HoverButton(btns, PANEL3, LINE, fg=INK, text=txt, padx=14, pady=9, command=cmd).pack(side="left", padx=(0, 8))
         self.nb = ttk.Notebook(left)
-        self.nb.pack(fill="both", expand=True, padx=12, pady=6)
+        self.nb.pack(fill="both", expand=True, padx=14, pady=(2, 8))
         self.nb.bind("<<NotebookTabChanged>>", self._update_units)
         data = tk.Frame(self.nb, bg=PANEL)
-        self.nb.add(data, text="\U0001F4C2  Data")
+        self.nb.add(data, text="Data")
         self._build_data_tab(data)
         for gid, gname, icon in GROUPS:
             tab = tk.Frame(self.nb, bg=PANEL)
-            self.nb.add(tab, text=f"{icon} {gname.split(' ')[0]}")
+            self.nb.add(tab, text=TAB_LABELS.get(gid, gname.split(" ")[0]))
             for f in [f for f in FIELDS if f["group"] == gid]:
                 self._build_field_row(tab, f)
 
         self._update_units()
 
     def _build_data_tab(self, tab):
-        def section(t):
-            tk.Label(tab, text=t, bg=PANEL, fg=INK, font=FONT_H).pack(anchor="w", padx=14, pady=(12, 2))
+        def section(n, t):
+            h = tk.Frame(tab, bg=PANEL)
+            h.pack(fill="x", padx=16, pady=(16, 4))
+            tk.Label(h, text=str(n), bg=ACCENT, fg="white", font=FONT_CAP, width=2).pack(side="left", padx=(0, 8))
+            tk.Label(h, text=t, bg=PANEL, fg=INK, font=FONT_H).pack(side="left")
 
         def row():
             r = tk.Frame(tab, bg=PANEL)
-            r.pack(fill="x", padx=14, pady=4)
+            r.pack(fill="x", padx=16, pady=5)
             return r
 
-        section("1 \u00B7 Healthy baseline (model training)")
+        section(1, "Healthy baseline (model training)")
         self.base_lbl = tk.Label(tab, bg=PANEL, fg=INK_DIM, font=FONT_SMALL, wraplength=520, justify="left")
-        self.base_lbl.pack(anchor="w", padx=14)
+        self.base_lbl.pack(anchor="w", padx=16)
         r = row()
         for txt, cmd in (("Load healthy CSV...", self.load_baseline_csv), ("Use built-in baseline", self.use_builtin),
                          ("Retrain", self.retrain)):
-            HoverButton(r, PANEL3, LINE, text=txt, padx=10, pady=6, command=cmd).pack(side="left", padx=(0, 6))
+            HoverButton(r, PANEL3, LINE, fg=INK, text=txt, padx=12, pady=6, command=cmd).pack(side="left", padx=(0, 6))
         r = row()
-        sp = dict(bg=BG, fg=INK, relief="flat", width=6, buttonbackground=PANEL3, insertbackground=INK)
         tk.Label(r, text="Trees", bg=PANEL, fg=INK_DIM, font=FONT_SMALL).pack(side="left")
-        tk.Spinbox(r, from_=50, to=500, increment=50, textvariable=self.trees_var, **sp).pack(side="left", padx=(4, 14))
+        ttk.Spinbox(r, from_=50, to=500, increment=50, textvariable=self.trees_var, width=6,
+                    style="Dark.TSpinbox").pack(side="left", padx=(6, 18))
         tk.Label(r, text="Expected anomalies", bg=PANEL, fg=INK_DIM, font=FONT_SMALL).pack(side="left")
-        tk.Spinbox(r, from_=0.001, to=0.2, increment=0.005, format="%.3f", textvariable=self.cont_var,
-                   **sp).pack(side="left", padx=4)
+        ttk.Spinbox(r, from_=0.001, to=0.2, increment=0.005, format="%.3f", textvariable=self.cont_var, width=7,
+                    style="Dark.TSpinbox").pack(side="left", padx=6)
 
-        section("2 \u00B7 Telemetry log to check")
+        section(2, "Telemetry log to check")
         r = row()
-        HoverButton(r, ACCENT, ACCENT_HOVER, text="\u2B06  Upload log CSV...", font=("Segoe UI", 10, "bold"),
-                    padx=12, pady=7, command=self.upload_log).pack(side="left")
+        HoverButton(r, ACCENT, ACCENT_HOVER, text="Upload log CSV...", font=FONT_BOLD,
+                    padx=14, pady=7, command=self.upload_log).pack(side="left")
         self.log_lbl = tk.Label(tab, text="No log uploaded yet.", bg=PANEL, fg=INK_DIM, font=FONT_SMALL,
                                 wraplength=520, justify="left")
-        self.log_lbl.pack(anchor="w", padx=14)
+        self.log_lbl.pack(anchor="w", padx=16)
 
-        section("Health score over time")
-        self.tl = tk.Canvas(tab, bg=BG, height=120, highlightthickness=1, highlightbackground=LINE)
-        self.tl.pack(fill="x", padx=14, pady=(2, 8))
+        section(3, "Health score over time")
+        self.tl = tk.Canvas(tab, bg=BG, height=130, highlightthickness=1, highlightbackground=LINE)
+        self.tl.pack(fill="x", padx=16, pady=(2, 10))
         self.tl.bind("<Configure>", lambda e: self._draw_timeline())
+
+        def rewrap(e):
+            for w in (self.base_lbl, self.log_lbl):
+                w.configure(wraplength=max(200, e.width - 36))
+        tab.bind("<Configure>", rewrap)
 
     def _build_field_row(self, parent, f):
         row = tk.Frame(parent, bg=PANEL)
-        row.pack(fill="x", padx=14, pady=8)
+        row.pack(fill="x", padx=16, pady=(12, 0))
         top = tk.Frame(row, bg=PANEL)
         top.pack(fill="x")
-        lbl = tk.Label(top, text=f["label"], bg=PANEL, fg=INK, font=FONT_B, cursor="question_arrow")
+        lbl = tk.Label(top, text=f["label"], bg=PANEL, fg=INK, font=FONT_BOLD, cursor="question_arrow")
         lbl.pack(side="left")
         Tooltip(lbl, f'Range: {f["min"]}\u2013{f["max"]} {f["unit"]}\n{f["src"][:110]}')
         var = tk.StringVar()
         tk.Entry(top, textvariable=var, width=10, bg=BG, fg=INK, insertbackground=INK, relief="flat",
                  highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT, font=FONT_MONO,
-                 justify="right").pack(side="right")
-        tk.Label(top, text=f["unit"], bg=PANEL, fg=INK_DIM, font=FONT_SMALL).pack(side="right", padx=(4, 6))
+                 justify="right").pack(side="right", ipady=2)
+        tk.Label(top, text=f["unit"], bg=PANEL, fg=INK_DIM, font=FONT_SMALL).pack(side="right", padx=(4, 8))
+        tk.Label(row, text=f'Nominal {f["min"]}\u2013{f["max"]} {f["unit"]}', bg=PANEL, fg=INK_DIM,
+                 font=FONT_SMALL).pack(anchor="w")
         lo, hi = f["hard_min"], f["hard_max"]
         scale = tk.Scale(row, from_=lo, to=hi, orient="horizontal", resolution=(hi - lo) / 200, showvalue=False,
                          bg=PANEL, troughcolor=PANEL3, highlightthickness=0, bd=0, sliderrelief="flat",
                          length=300, activebackground=ACCENT)
         scale.pack(fill="x", pady=(4, 0))
+        tk.Frame(parent, bg=LINE, height=1).pack(fill="x", padx=16, pady=(10, 0))
         busy = {"f": False}
 
         def sync_from_scale():              # only when the USER moves the slider: copy its value into the box
@@ -317,48 +360,56 @@ class AstroSense(tk.Tk):
         self.status_card = tk.Frame(top, bg=PANEL2, highlightthickness=1, highlightbackground=LINE)
         self.status_card.pack(side="left", fill="both", expand=True, padx=(0, 10))
         self.status_dot = tk.Canvas(self.status_card, width=14, height=14, bg=PANEL2, highlightthickness=0)
-        self.status_dot.pack(anchor="w", padx=16, pady=(14, 0))
-        self.status_title = tk.Label(self.status_card, text="Awaiting data", bg=PANEL2, fg=INK, font=("Segoe UI", 13, "bold"))
-        self.status_title.pack(anchor="w", padx=16, pady=(4, 0))
+        self.status_dot.pack(anchor="w", padx=18, pady=(18, 0))
+        self.status_title = tk.Label(self.status_card, text="Awaiting data", bg=PANEL2, fg=INK,
+                                     font=("Segoe UI", 14, "bold"))
+        self.status_title.pack(anchor="w", padx=18, pady=(6, 0))
         self.status_sub = tk.Label(self.status_card, text="Upload a log or enter a reading, then run diagnostics.",
                                    bg=PANEL2, fg=INK_DIM, font=FONT_B, wraplength=300, justify="left")
-        self.status_sub.pack(anchor="w", padx=16, pady=(2, 14))
+        self.status_sub.pack(anchor="w", padx=18, pady=(2, 18))
         gf = tk.Frame(top, bg=PANEL2, highlightthickness=1, highlightbackground=LINE)
         gf.pack(side="left")
         self.gauge = RoundGauge(gf, size=140, bg=PANEL2)
-        self.gauge.pack(padx=14, pady=(14, 6))
-        HoverButton(gf, PANEL3, LINE, text="\U0001F9EE  Show calculation", font=FONT_SMALL, padx=8, pady=4,
-                    command=self._show_calc).pack(pady=(0, 12))
+        self.gauge.pack(padx=16, pady=(14, 6))
+        HoverButton(gf, PANEL3, LINE, fg=INK, text="Show calculation", font=FONT_SMALL, padx=10, pady=4,
+                    command=self._show_calc).pack(pady=(0, 14))
 
         stats = tk.Frame(right, bg=BG)
-        stats.pack(fill="x", pady=(0, 8))
+        stats.pack(fill="x", pady=(0, 6))
         self.stat_health = self._stat_box(stats, "System status", "\u2014")
         self.stat_flags = self._stat_box(stats, "Flagged records", "0")
-        self.stat_quality = self._stat_box(stats, "Input quality", "\u2014")
+        self.stat_quality = self._stat_box(stats, "Input quality", "\u2014", last=True)
 
-        tk.Label(right, text="Warning checklist", bg=BG, fg=INK, font=FONT_H).pack(anchor="w", pady=(6, 4))
+        caption(right, "Warning checklist", pady=(12, 6))
         self.chk_box = tk.Frame(right, bg=BG)
-        self.chk_box.pack(fill="x", pady=(0, 8))
+        self.chk_box.pack(fill="x", pady=(0, 4))
         tk.Label(self.chk_box, text="No analysis yet.", bg=BG, fg=INK_DIM, font=FONT_B).pack(anchor="w")
 
-        tk.Label(right, text="Subsystem status", bg=BG, fg=INK, font=FONT_H).pack(anchor="w", pady=(4, 4))
-        self.sub_box = tk.Frame(right, bg=BG)
-        self.sub_box.pack(fill="x")
+        caption(right, "Subsystem status", pady=(12, 6))
+        sub_card = tk.Frame(right, bg=PANEL, highlightthickness=1, highlightbackground=LINE)
+        sub_card.pack(fill="x")
+        self.sub_box = tk.Frame(sub_card, bg=PANEL)
+        self.sub_box.pack(fill="x", padx=14, pady=8)
         self.sub_box.columnconfigure((0, 1), weight=1)
 
-        self.insight_frame = tk.Frame(right, bg="#151a33", highlightthickness=1, highlightbackground=ACCENT)
-        self.insight_frame.pack(fill="x", pady=(12, 0))
-        self.insight = tk.Label(self.insight_frame, text="\U0001F4A1  No readings screened yet.", bg="#151a33",
+        self.insight_frame = tk.Frame(right, bg=INSIGHT_BG, highlightthickness=1, highlightbackground=ACCENT)
+        self.insight_frame.pack(fill="x", pady=(14, 0))
+        self.insight = tk.Label(self.insight_frame, text="No readings screened yet.", bg=INSIGHT_BG,
                                 fg=INK_DIM, font=FONT_B, wraplength=470, justify="left")
-        self.insight.pack(anchor="w", padx=12, pady=10)
+        self.insight.pack(anchor="w", padx=14, pady=12)
         self._set_dot(OK)
 
-    def _stat_box(self, parent, title, value):
+        def rewrap(e):
+            self.insight.configure(wraplength=max(200, e.width - 48))
+            self.status_sub.configure(wraplength=max(160, e.width - 240))
+        right.bind("<Configure>", rewrap)
+
+    def _stat_box(self, parent, title, value, last=False):
         box = tk.Frame(parent, bg=PANEL2, highlightthickness=1, highlightbackground=LINE)
-        box.pack(side="left", fill="both", expand=True, padx=4)
-        tk.Label(box, text=title, bg=PANEL2, fg=INK_DIM, font=("Segoe UI", 8)).pack(anchor="w", padx=10, pady=(8, 0))
+        box.pack(side="left", fill="both", expand=True, padx=(0, 0 if last else 8))
+        tk.Label(box, text=title.upper(), bg=PANEL2, fg=INK_DIM, font=FONT_CAP).pack(anchor="w", padx=12, pady=(10, 0))
         v = tk.Label(box, text=value, bg=PANEL2, fg=INK, font=("Segoe UI", 14, "bold"))
-        v.pack(anchor="w", padx=10, pady=(0, 8))
+        v.pack(anchor="w", padx=12, pady=(2, 10))
         return v
 
     def _set_dot(self, color):
@@ -500,7 +551,7 @@ class AstroSense(tk.Tk):
         color = OK if overall >= 80 else (WARN if overall >= 55 else DANGER)
 
         self.gauge.animate_to(overall, color)
-        bg = "#241722" if is_anom else PANEL2
+        bg = DANGER_BG if is_anom else PANEL2
         self.status_card.configure(bg=bg, highlightbackground=DANGER if is_anom else OK)
         for w in (self.status_dot, self.status_title, self.status_sub):
             w.configure(bg=bg)
@@ -521,13 +572,13 @@ class AstroSense(tk.Tk):
         for w in self.chk_box.winfo_children():
             w.destroy()
         if not items:
-            tk.Label(self.chk_box, text="\u2705  No warnings \u2014 all systems nominal.", bg=BG, fg=OK, font=FONT_B).pack(anchor="w")
+            tk.Label(self.chk_box, text="No warnings \u2014 all systems nominal.", bg=BG, fg=OK, font=FONT_B).pack(anchor="w")
         for col, cnt, mz in items[:6]:
             c = DANGER if abs(mz) >= 4 else WARN
-            r = tk.Frame(self.chk_box, bg="#241722")
-            r.pack(fill="x", pady=2)
+            r = tk.Frame(self.chk_box, bg=DANGER_BG)
+            r.pack(fill="x", pady=3)
             tk.Frame(r, bg=c, width=3).pack(side="left", fill="y")
-            lab = tk.Label(r, bg="#241722", fg=INK, font=FONT_SMALL, anchor="w", padx=8, pady=5, cursor="hand2",
+            lab = tk.Label(r, bg=DANGER_BG, fg=INK, font=FONT_SMALL, anchor="w", padx=8, pady=5, cursor="hand2",
                            text=f"\u2610  {warning_text(col, mz)}   \u00B7  {cnt} record(s), {mz:+.1f}\u03C3")
             lab.pack(side="left", fill="x")
             lab.bind("<Button-1>", lambda e, l=lab: l.configure(
@@ -546,22 +597,22 @@ class AstroSense(tk.Tk):
         for i, (gid, gname, icon) in enumerate(GROUPS):
             s = gstate[gid]
             c, lab = (OK, "Normal") if s == 0 else ((WARN, "Watch") if s == 1 else (DANGER, "Fault"))
-            cell = tk.Frame(self.sub_box, bg=BG)
-            cell.grid(row=i // 2, column=i % 2, sticky="ew", pady=2, padx=(0, 10))
-            d = tk.Canvas(cell, width=10, height=10, bg=BG, highlightthickness=0)
+            cell = tk.Frame(self.sub_box, bg=PANEL)
+            cell.grid(row=i // 2, column=i % 2, sticky="ew", pady=4, padx=(0, 12))
+            d = tk.Canvas(cell, width=10, height=10, bg=PANEL, highlightthickness=0)
             d.create_oval(2, 2, 10, 10, fill=c, width=0)
             d.pack(side="left", padx=(0, 6))
-            tk.Label(cell, text=f"{icon} {gname}", bg=BG, fg=INK, font=FONT_SMALL).pack(side="left")
-            tk.Label(cell, text=lab, bg=BG, fg=c, font=("Segoe UI", 9, "bold")).pack(side="right")
+            tk.Label(cell, text=gname, bg=PANEL, fg=INK, font=FONT_SMALL).pack(side="left")
+            tk.Label(cell, text=lab, bg=PANEL, fg=c, font=("Segoe UI", 9, "bold")).pack(side="right")
 
         if is_anom and items:
             first = labels[int(np.flatnonzero(flagged)[0])]
-            text = (f"\u26A0\uFE0F  {warning_text(items[0][0], items[0][2])} is the strongest signal. First flagged at "
+            text = (f"{warning_text(items[0][0], items[0][2])} is the strongest signal. First flagged at "
                     f"{first}. Inspect this subsystem before proceeding.")
         elif is_anom:
-            text = "\u26A0\uFE0F  Unusual combination of readings detected; no single sensor stands out."
+            text = "Unusual combination of readings detected; no single sensor stands out."
         else:
-            text = f"\u2705  {n} record(s) screened against the healthy baseline; nothing unusual found."
+            text = f"{n} record(s) screened against the healthy baseline; nothing unusual found."
         self.insight_frame.configure(highlightbackground=DANGER if is_anom else ACCENT)
         self.insight.configure(text=text, fg=INK)
 
