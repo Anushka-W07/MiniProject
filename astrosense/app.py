@@ -19,12 +19,12 @@ import pandas as pd
 from .backend import *  # noqa: F401,F403  (FIELDS, FBY, Detector, clean, simulate, ...)
 
 # ---------------------------------------------------------------- palette / fonts
-BG, PANEL, PANEL2, PANEL3, LINE = "#0b0e17", "#121623", "#171c2e", "#1f2539", "#272f48"
-INK, INK_DIM = "#eceff7", "#8b93ad"
-ACCENT, ACCENT_HOVER = "#6c7dff", "#8391ff"
-OK, WARN, DANGER = "#34d3b0", "#f2a93b", "#ff5c7a"
-DANGER_BG, INSIGHT_BG = "#2a1722", "#141a33"
-FONT_TITLE = ("Segoe UI", 20, "bold")
+BG, PANEL, PANEL2, PANEL3, LINE = "#0D1420", "#152131", "#1B2A3D", "#24364B", "#30445B"
+INK, INK_DIM = "#EDF3FA", "#A4B5C8"
+ACCENT, ACCENT_HOVER = "#5688E8", "#6D9CF2"
+OK, WARN, DANGER = "#43C6A8", "#E9AD55", "#E66C7A"
+DANGER_BG, INSIGHT_BG = "#35212B", "#1A2A40"
+FONT_TITLE = ("Segoe UI", 22, "bold")
 FONT_SUB = ("Segoe UI", 10)
 FONT_H = ("Segoe UI", 12, "bold")
 FONT_B = ("Segoe UI", 10)
@@ -125,7 +125,7 @@ class AstroSense(tk.Tk):
         super().__init__()
         self.title("AstroSense \u2014 Spacecraft Diagnostics Console")
         self.configure(bg=BG)
-        self.geometry(f"1280x{min(900, self.winfo_screenheight() - 70)}")
+        self.geometry(f"1320x{min(900, self.winfo_screenheight() - 70)}")
         self.minsize(1050, 680)
         self.entries, self.scales, self._calc = {}, {}, None
         self.det, self.log_raw, self.log_name, self._tl = Detector(), None, "", None
@@ -143,8 +143,8 @@ class AstroSense(tk.Tk):
     def _build_style(self):
         st = ttk.Style(self)
         st.theme_use("clam")
-        st.configure("TNotebook", background=PANEL, borderwidth=0, tabmargins=(0, 0, 0, 0))
-        st.configure("TNotebook.Tab", background=PANEL, foreground=INK_DIM, padding=(13, 8),
+        st.configure("TNotebook", background=PANEL, borderwidth=0, tabmargins=(2, 2, 2, 0))
+        st.configure("TNotebook.Tab", background=PANEL2, foreground=INK_DIM, padding=(16, 10),
                      font=FONT_BOLD, borderwidth=0)
         st.map("TNotebook.Tab", background=[("selected", ACCENT), ("active", PANEL3)],
                foreground=[("selected", "white"), ("active", INK)])
@@ -192,7 +192,7 @@ class AstroSense(tk.Tk):
     # ---------- layout ----------
     def _build_layout(self):
         head = tk.Frame(self, bg=BG)
-        head.pack(fill="x", padx=24, pady=(18, 12))
+        head.pack(fill="x", padx=28, pady=(22, 16))
         logo = tk.Canvas(head, width=34, height=34, bg=BG, highlightthickness=0)
         logo.create_oval(3, 3, 31, 31, outline=ACCENT, width=2)
         logo.create_oval(12, 12, 22, 22, fill=ACCENT, outline="")
@@ -207,11 +207,11 @@ class AstroSense(tk.Tk):
         dot = tk.Canvas(head, width=10, height=10, bg=BG, highlightthickness=0)
         dot.create_oval(1, 1, 9, 9, fill=OK, outline="")
         dot.pack(side="right", padx=8)
-        tk.Frame(self, bg=LINE, height=1).pack(fill="x", padx=24)
+        tk.Frame(self, bg=LINE, height=1).pack(fill="x", padx=28)
 
         self._build_units_footer()
         body = tk.Frame(self, bg=BG)
-        body.pack(fill="both", expand=True, padx=24, pady=(14, 10))
+        body.pack(fill="both", expand=True, padx=28, pady=(18, 14))
         body.columnconfigure(0, weight=6)
         body.columnconfigure(1, weight=5)
         body.rowconfigure(0, weight=1)
@@ -221,7 +221,7 @@ class AstroSense(tk.Tk):
     def _build_units_footer(self):
         """Box at the bottom: measuring units used on the tab that is open."""
         foot = tk.Frame(self, bg=PANEL, highlightthickness=1, highlightbackground=LINE)
-        foot.pack(side="bottom", fill="x", padx=24, pady=(0, 16))
+        foot.pack(side="bottom", fill="x", padx=28, pady=(0, 18))
         tk.Label(foot, text="UNITS", bg=PANEL, fg=ACCENT, font=FONT_CAP).pack(side="left", anchor="n",
                                                                            padx=(14, 12), pady=(10, 0))
         self.units_lbl = tk.Label(foot, bg=PANEL, fg=INK, font=FONT_SMALL, anchor="w", justify="left",
@@ -236,17 +236,17 @@ class AstroSense(tk.Tk):
 
     def _build_input_panel(self, parent):
         left = tk.Frame(parent, bg=PANEL, highlightthickness=1, highlightbackground=LINE)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-        tk.Label(left, text="Telemetry Input", bg=PANEL, fg=INK, font=FONT_H).pack(anchor="w", padx=18, pady=(16, 2))
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+        tk.Label(left, text="Telemetry Input", bg=PANEL, fg=INK, font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=20, pady=(18, 4))
         sub = tk.Label(left, text="Data tab: train on healthy data and check an uploaded log.   "
                                   "Sensor tabs: check a single manual reading.",
                        bg=PANEL, fg=INK_DIM, font=FONT_SMALL, justify="left", wraplength=560)
-        sub.pack(anchor="w", padx=18, pady=(0, 8))
+        sub.pack(anchor="w", padx=20, pady=(0, 12))
         left.bind("<Configure>", lambda e: sub.configure(wraplength=max(200, e.width - 40)))
         tk.Label(left, text="Press Enter to run diagnostics for the open tab.", bg=PANEL, fg=INK_DIM,
-                 font=FONT_SMALL).pack(side="bottom", anchor="w", padx=18, pady=(0, 12))
+                 font=FONT_SMALL).pack(side="bottom", anchor="w", padx=20, pady=(0, 14))
         btns = tk.Frame(left, bg=PANEL)
-        btns.pack(side="bottom", fill="x", padx=18, pady=(10, 8))
+        btns.pack(side="bottom", fill="x", padx=20, pady=(12, 10))
         tk.Frame(left, bg=LINE, height=1).pack(side="bottom", fill="x")
         HoverButton(btns, ACCENT, ACCENT_HOVER, text="Run Diagnostics", font=FONT_BOLD,
                     padx=18, pady=9, command=self.run_diagnostics).pack(side="left", padx=(0, 10))
@@ -254,7 +254,7 @@ class AstroSense(tk.Tk):
                          ("Clear", self.clear_all)):
             HoverButton(btns, PANEL3, LINE, fg=INK, text=txt, padx=14, pady=9, command=cmd).pack(side="left", padx=(0, 8))
         self.nb = ttk.Notebook(left)
-        self.nb.pack(fill="both", expand=True, padx=14, pady=(2, 8))
+        self.nb.pack(fill="both", expand=True, padx=16, pady=(4, 10))
         self.nb.bind("<<NotebookTabChanged>>", self._update_units)
         data = tk.Frame(self.nb, bg=PANEL)
         self.nb.add(data, text="Data")
@@ -322,14 +322,14 @@ class AstroSense(tk.Tk):
         Tooltip(lbl, f'Range: {f["min"]}\u2013{f["max"]} {f["unit"]}\n{f["src"][:110]}')
         var = tk.StringVar()
         tk.Entry(top, textvariable=var, width=10, bg=BG, fg=INK, insertbackground=INK, relief="flat",
-                 highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT, font=FONT_MONO,
+                 highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT_HOVER, font=FONT_MONO,
                  justify="right").pack(side="right", ipady=2)
         tk.Label(top, text=f["unit"], bg=PANEL, fg=INK_DIM, font=FONT_SMALL).pack(side="right", padx=(4, 8))
         tk.Label(row, text=f'Nominal {f["min"]}\u2013{f["max"]} {f["unit"]}', bg=PANEL, fg=INK_DIM,
                  font=FONT_SMALL).pack(anchor="w")
         lo, hi = f["hard_min"], f["hard_max"]
         scale = tk.Scale(row, from_=lo, to=hi, orient="horizontal", resolution=(hi - lo) / 200, showvalue=False,
-                         bg=PANEL, troughcolor=PANEL3, highlightthickness=0, bd=0, sliderrelief="flat",
+                         bg=PANEL, troughcolor="#354A63", highlightthickness=0, bd=0, sliderrelief="flat",
                          length=300, activebackground=ACCENT)
         scale.pack(fill="x", pady=(4, 0))
         tk.Frame(parent, bg=LINE, height=1).pack(fill="x", padx=16, pady=(10, 0))
@@ -360,17 +360,17 @@ class AstroSense(tk.Tk):
         self.status_card = tk.Frame(top, bg=PANEL2, highlightthickness=1, highlightbackground=LINE)
         self.status_card.pack(side="left", fill="both", expand=True, padx=(0, 10))
         self.status_dot = tk.Canvas(self.status_card, width=14, height=14, bg=PANEL2, highlightthickness=0)
-        self.status_dot.pack(anchor="w", padx=18, pady=(18, 0))
+        self.status_dot.pack(anchor="w", padx=20, pady=(20, 0))
         self.status_title = tk.Label(self.status_card, text="Awaiting data", bg=PANEL2, fg=INK,
                                      font=("Segoe UI", 14, "bold"))
-        self.status_title.pack(anchor="w", padx=18, pady=(6, 0))
+        self.status_title.pack(anchor="w", padx=20, pady=(8, 0))
         self.status_sub = tk.Label(self.status_card, text="Upload a log or enter a reading, then run diagnostics.",
                                    bg=PANEL2, fg=INK_DIM, font=FONT_B, wraplength=300, justify="left")
-        self.status_sub.pack(anchor="w", padx=18, pady=(2, 18))
+        self.status_sub.pack(anchor="w", padx=20, pady=(4, 20))
         gf = tk.Frame(top, bg=PANEL2, highlightthickness=1, highlightbackground=LINE)
         gf.pack(side="left")
-        self.gauge = RoundGauge(gf, size=140, bg=PANEL2)
-        self.gauge.pack(padx=16, pady=(14, 6))
+        self.gauge = RoundGauge(gf, size=150, bg=PANEL2)
+        self.gauge.pack(padx=18, pady=(16, 8))
         HoverButton(gf, PANEL3, LINE, fg=INK, text="Show calculation", font=FONT_SMALL, padx=10, pady=4,
                     command=self._show_calc).pack(pady=(0, 14))
 
@@ -406,10 +406,10 @@ class AstroSense(tk.Tk):
 
     def _stat_box(self, parent, title, value, last=False):
         box = tk.Frame(parent, bg=PANEL2, highlightthickness=1, highlightbackground=LINE)
-        box.pack(side="left", fill="both", expand=True, padx=(0, 0 if last else 8))
-        tk.Label(box, text=title.upper(), bg=PANEL2, fg=INK_DIM, font=FONT_CAP).pack(anchor="w", padx=12, pady=(10, 0))
+        box.pack(side="left", fill="both", expand=True, padx=(0, 0 if last else 10))
+        tk.Label(box, text=title.upper(), bg=PANEL2, fg=INK_DIM, font=FONT_CAP).pack(anchor="w", padx=14, pady=(12, 0))
         v = tk.Label(box, text=value, bg=PANEL2, fg=INK, font=("Segoe UI", 14, "bold"))
-        v.pack(anchor="w", padx=12, pady=(2, 10))
+        v.pack(anchor="w", padx=14, pady=(4, 12))
         return v
 
     def _set_dot(self, color):
