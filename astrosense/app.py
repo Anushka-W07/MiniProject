@@ -5,13 +5,16 @@ Pipeline (as in the synopsis / Phase-I report):
   clean broken rows -> Min-Max Scaling -> Isolation Forest learns the healthy pattern
   -> System Health Score (0-100%) -> automatic warning checklist.
 
+Pages:  Dashboard (overview) | Data (train + upload log) | Diagnostics (manual sensor tabs + report) | About
 Run:      python main.py
 Install:  pip install pandas scikit-learn numpy
 """
 import os
 import time
+import random
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+from tkinter import font as tkfont
 
 import numpy as np
 import pandas as pd
@@ -19,19 +22,25 @@ import pandas as pd
 from .backend import *  # noqa: F401,F403  (FIELDS, FBY, Detector, clean, simulate, ...)
 
 # ---------------------------------------------------------------- palette / fonts
-BG, PANEL, PANEL2, PANEL3, LINE = "#0D1420", "#152131", "#1B2A3D", "#24364B", "#30445B"
-INK, INK_DIM = "#EDF3FA", "#A4B5C8"
-ACCENT, ACCENT_HOVER = "#5688E8", "#6D9CF2"
-OK, WARN, DANGER = "#43C6A8", "#E9AD55", "#E66C7A"
-DANGER_BG, INSIGHT_BG = "#35212B", "#1A2A40"
-FONT_TITLE = ("Segoe UI", 22, "bold")
+BG, SIDEBAR = "#060b1a", "#081024"
+CARD, CARD2, LINE, TRACK = "#0d1730", "#111f3f", "#1d2d57", "#1a2a52"
+PANEL, PANEL2, PANEL3 = CARD, CARD2, "#1b2a52"
+INK, INK_DIM = "#f1f5ff", "#9aa9c9"
+ACCENT, ACCENT_HOVER, ACTIVE_BG = "#3d8bff", "#62a5ff", "#14357a"
+OK, WARN, DANGER, PURPLE = "#2fd47a", "#f59a3c", "#ff5c7a", "#8272ff"
+DANGER_BG, INSIGHT_BG = "#2a1522", "#0f1c3d"
+FONT_WELCOME = ("Segoe UI", 24, "bold")
+FONT_TITLE = ("Segoe UI", 26, "bold")
+FONT_ITALIC = ("Segoe UI", 12, "italic")
 FONT_SUB = ("Segoe UI", 10)
-FONT_H = ("Segoe UI", 12, "bold")
+FONT_H = ("Segoe UI", 13, "bold")
 FONT_B = ("Segoe UI", 10)
 FONT_BOLD = ("Segoe UI", 10, "bold")
 FONT_SMALL = ("Segoe UI", 9)
+FONT_SMALL_B = ("Segoe UI", 9, "bold")
 FONT_CAP = ("Segoe UI", 8, "bold")
 FONT_MONO = ("Consolas", 10)
+OV_H = 230          # height of the dashboard health chart
 
 GROUPS = [
     ("power", "Power System", ""), ("propulsion", "Propulsion", ""),
@@ -40,6 +49,23 @@ GROUPS = [
 ]
 TAB_LABELS = {"power": "Power", "propulsion": "Propulsion", "avionics": "Avionics",
               "cabin": "Cabin", "attitude": "Attitude", "environment": "Environment"}
+GROUP_ICON = {"power": "bolt", "propulsion": "rocket", "avionics": "chip",
+              "cabin": "life", "attitude": "target", "environment": "globe"}
+
+METHOD_TEXT = (
+    "1. Broken rows (missing / non-numeric values) are removed.\n"
+    "2. Min-Max Scaling puts every sensor on a 0-1 scale.\n"
+    "3. Isolation Forest learns the healthy pattern from the training data.\n"
+    "4. Sensor health: every sensor is compared with its nominal range. Inside the range = 100 %; "
+    "outside, it falls in a straight line to 0 % at the sensor's hard limit. The sensor healths are "
+    "multiplied (a series system: every part must work).\n"
+    "5. Pattern health: the Isolation Forest anomaly score is converted to 0-100 % "
+    "(100 = as healthy as training data, 80 = flagging threshold, 0 = every sensor at its limit).\n"
+    "   Record health = the lower of steps 4 and 5.\n"
+    "   System Health Score = mean record health x share of unflagged records.\n"
+    "6. For flagged records, the sensors that deviate most (in standard deviations "
+    "from the healthy mean) become the warning checklist.\n\n"
+    "Prototype: the built-in baseline is synthetic. Use real healthy telemetry for real results.")
 
 # short name of each measuring unit (the bottom box shows the units of the tab you are on)
 UNIT_NAMES = {
@@ -55,12 +81,119 @@ def units_text(group=None):
     return "   \u00B7   ".join(f"{u} - {UNIT_NAMES.get(u, u)}" for u in units)
 
 
+
+
+# ---------------------------------------------------------------- drawing helpers
+def blend(fg, bg, a):
+    """Colour fg at opacity a over colour bg (Tk has no alpha)."""
+    f = [int(fg[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(bg[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(round(x * a + y * (1 - a)) for x, y in zip(f, b))
+
+
+def round_pts(x1, y1, x2, y2, r):
+    """Polygon points of a rounded rectangle (draw with smooth=True)."""
+    return [x1 + r, y1, x1 + r, y1, x2 - r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y1 + r, x2, y2 - r,
+            x2, y2 - r, x2, y2, x2 - r, y2, x2 - r, y2, x1 + r, y2, x1 + r, y2, x1, y2, x1, y2 - r,
+            x1, y2 - r, x1, y1 + r, x1, y1 + r, x1, y1]
+
+
+def draw_icon(c, kind, cx, cy, s, color, w=2):
+    """Small line/solid icons drawn with canvas shapes (no image files, no emoji)."""
+    kw = dict(fill=color, outline=color)
+    ln = dict(fill=color, width=w, capstyle="round", joinstyle="round")
+    if kind == "home":
+        c.create_polygon(cx - s, cy, cx, cy - s, cx + s, cy, **kw)
+        c.create_rectangle(cx - s * .65, cy, cx + s * .65, cy + s * .9, **kw)
+    elif kind == "data":
+        c.create_oval(cx - s * .85, cy - s * .95, cx + s * .85, cy - s * .35, **kw)
+        c.create_rectangle(cx - s * .85, cy - s * .65, cx + s * .85, cy + s * .65, **kw)
+        c.create_oval(cx - s * .85, cy + s * .35, cx + s * .85, cy + s * .95, **kw)
+    elif kind == "tools":
+        c.create_line(cx - s, cy - s, cx + s, cy + s, **dict(ln, width=w + 1))
+        c.create_line(cx - s, cy + s, cx + s, cy - s, **dict(ln, width=w + 1))
+    elif kind == "info":
+        c.create_oval(cx - s, cy - s, cx + s, cy + s, outline=color, width=w)
+        c.create_text(cx, cy, text="i", fill=color, font=("Segoe UI", max(8, int(s * 1.1)), "bold"))
+    elif kind == "bolt":
+        c.create_polygon(cx + s * .2, cy - s, cx - s * .6, cy + s * .15, cx - s * .05, cy + s * .15,
+                         cx - s * .25, cy + s, cx + s * .65, cy - s * .2, cx + s * .05, cy - s * .2, **kw)
+    elif kind == "rocket":
+        c.create_polygon(cx, cy - s, cx + s * .4, cy - s * .2, cx + s * .4, cy + s * .5,
+                         cx - s * .4, cy + s * .5, cx - s * .4, cy - s * .2, **kw)
+        c.create_polygon(cx - s * .4, cy + s * .1, cx - s * .85, cy + s * .7, cx - s * .4, cy + s * .5, **kw)
+        c.create_polygon(cx + s * .4, cy + s * .1, cx + s * .85, cy + s * .7, cx + s * .4, cy + s * .5, **kw)
+        c.create_line(cx, cy + s * .55, cx, cy + s, **ln)
+    elif kind == "chip":
+        c.create_rectangle(cx - s * .6, cy - s * .6, cx + s * .6, cy + s * .6, outline=color, width=w)
+        for k in (-.3, .3):
+            c.create_line(cx + k * s, cy - s * .6, cx + k * s, cy - s, **ln)
+            c.create_line(cx + k * s, cy + s * .6, cx + k * s, cy + s, **ln)
+            c.create_line(cx - s * .6, cy + k * s, cx - s, cy + k * s, **ln)
+            c.create_line(cx + s * .6, cy + k * s, cx + s, cy + k * s, **ln)
+    elif kind == "globe":
+        c.create_oval(cx - s, cy - s, cx + s, cy + s, outline=color, width=w)
+        c.create_oval(cx - s * .45, cy - s, cx + s * .45, cy + s, outline=color, width=w - 1 or 1)
+        c.create_line(cx - s, cy, cx + s, cy, fill=color, width=w - 1 or 1)
+    elif kind == "life":
+        c.create_oval(cx - s, cy - s, cx + s, cy + s, outline=color, width=w)
+        c.create_line(cx - s * .5, cy, cx + s * .5, cy, **ln)
+        c.create_line(cx, cy - s * .5, cx, cy + s * .5, **ln)
+    elif kind == "target":
+        c.create_oval(cx - s, cy - s, cx + s, cy + s, outline=color, width=w)
+        c.create_oval(cx - s * .4, cy - s * .4, cx + s * .4, cy + s * .4, outline=color, width=w)
+        c.create_line(cx - s * 1.2, cy, cx - s * .6, cy, **ln)
+        c.create_line(cx + s * .6, cy, cx + s * 1.2, cy, **ln)
+    elif kind == "pulse":
+        c.create_line(cx - s, cy, cx - s * .45, cy, cx - s * .2, cy - s * .8, cx + s * .15, cy + s * .8,
+                      cx + s * .4, cy, cx + s, cy, **ln)
+    elif kind == "shield":
+        c.create_polygon(cx, cy - s, cx + s * .8, cy - s * .6, cx + s * .8, cy + s * .1, cx, cy + s,
+                         cx - s * .8, cy + s * .1, cx - s * .8, cy - s * .6, **kw)
+        c.create_line(cx - s * .4, cy, cx - s * .1, cy + s * .35, cx + s * .45, cy - s * .3,
+                      fill=CARD, width=w + 1, capstyle="round", joinstyle="round")
+    elif kind == "warn":
+        c.create_polygon(cx, cy - s, cx + s, cy + s * .8, cx - s, cy + s * .8, **kw)
+        c.create_text(cx, cy + s * .2, text="!", fill=CARD, font=("Segoe UI", max(8, int(s * 1.1)), "bold"))
+    elif kind == "check":
+        c.create_line(cx - s * .6, cy, cx - s * .15, cy + s * .5, cx + s * .65, cy - s * .5, **dict(ln, width=w + 1))
+    elif kind == "bars":
+        for i, hh in enumerate((.5, 1.0, .75)):
+            x = cx - s * .9 + i * s * .7
+            c.create_rectangle(x, cy + s - 2 * s * hh, x + s * .45, cy + s, **kw)
+    elif kind == "clock":
+        c.create_oval(cx - s, cy - s, cx + s, cy + s, outline=color, width=w)
+        c.create_line(cx, cy, cx, cy - s * .6, **ln)
+        c.create_line(cx, cy, cx + s * .5, cy + s * .2, **ln)
+    elif kind == "upload":
+        c.create_line(cx, cy + s * .2, cx, cy - s * .85, **ln)
+        c.create_line(cx - s * .5, cy - s * .3, cx, cy - s * .85, cx + s * .5, cy - s * .3, **ln)
+        c.create_line(cx - s, cy + s * .5, cx - s, cy + s * .9, cx + s, cy + s * .9, cx + s, cy + s * .5, **ln)
+    elif kind == "play":
+        c.create_polygon(cx - s * .6, cy - s, cx - s * .6, cy + s, cx + s * .9, cy, **kw)
+    elif kind == "star4":
+        c.create_polygon(cx, cy - s, cx + s * .25, cy - s * .25, cx + s, cy, cx + s * .25, cy + s * .25,
+                         cx, cy + s, cx - s * .25, cy + s * .25, cx - s, cy, cx - s * .25, cy - s * .25, **kw)
+    elif kind == "calendar":
+        c.create_rectangle(cx - s, cy - s * .8, cx + s, cy + s, outline=color, width=w)
+        c.create_line(cx - s, cy - s * .25, cx + s, cy - s * .25, fill=color, width=w)
+        c.create_line(cx - s * .5, cy - s, cx - s * .5, cy - s * .6, **ln)
+        c.create_line(cx + s * .5, cy - s, cx + s * .5, cy - s * .6, **ln)
+
+
+def draw_satellite(c, x, y, k=1.0):
+    """A small decorative satellite (body + two solar panels + dish)."""
+    panel, edge = "#2a5bb5", "#9bb8f0"
+    c.create_polygon(x - 12 * k, y - 3 * k, x - 58 * k, y - 22 * k, x - 66 * k, y - 4 * k, x - 20 * k, y + 14 * k,
+                     fill=panel, outline=edge)
+    c.create_polygon(x + 12 * k, y + 3 * k, x + 58 * k, y + 22 * k, x + 66 * k, y + 4 * k, x + 20 * k, y - 14 * k,
+                     fill=panel, outline=edge)
+    c.create_rectangle(x - 13 * k, y - 9 * k, x + 13 * k, y + 9 * k, fill="#cfd8ee", outline="#7f93bd")
+    c.create_oval(x - 7 * k, y - 20 * k, x + 7 * k, y - 8 * k, fill="#e6ecf8", outline="#7f93bd")
+    c.create_line(x, y - 9 * k, x, y - 26 * k, fill="#9bb8f0", width=2)
+
+
 # ---------------------------------------------------------------- widgets
-def caption(parent, text, bg=BG, **pack):
-    """Small upper-case section caption."""
-    tk.Label(parent, text=text.upper(), bg=bg, fg=INK_DIM, font=FONT_CAP).pack(anchor="w", **pack)
-
-
 class Tooltip:
     def __init__(self, widget, text):
         self.widget, self.text, self.tip = widget, text, None
@@ -82,18 +215,135 @@ class Tooltip:
             self.tip = None
 
 
-class HoverButton(tk.Button):
-    def __init__(self, master, bg, hover_bg, fg="white", **kw):
-        kw.setdefault("font", FONT_B)
-        super().__init__(master, bg=bg, fg=fg, activebackground=hover_bg, activeforeground=fg,
-                         relief="flat", bd=0, cursor="hand2", **kw)
-        self.bind("<Enter>", lambda e: self.configure(bg=hover_bg))
-        self.bind("<Leave>", lambda e: self.configure(bg=bg))
+class Card(tk.Canvas):
+    """Rounded 'glass' panel: put children in card.body. Height follows its content."""
+
+    def __init__(self, master, bg=CARD, border=LINE, parent_bg=BG, radius=16, pad=16):
+        super().__init__(master, width=10, height=10, bg=parent_bg, highlightthickness=0)
+        self.bgc, self.border, self.radius, self.pad = bg, border, radius, pad
+        self.body = tk.Frame(self, bg=bg)
+        self._win = self.create_window(pad, pad, window=self.body, anchor="nw")
+        self.bind("<Configure>", self._on_canvas)
+        self.body.bind("<Configure>", self._on_body)
+
+    def _on_canvas(self, e):
+        self.itemconfigure(self._win, width=max(e.width - 2 * self.pad, 1))
+        self._redraw(e.width, e.height)
+
+    def _on_body(self, e):
+        self.configure(height=e.height + 2 * self.pad)
+
+    def _redraw(self, w=None, h=None):
+        w, h = w or self.winfo_width(), h or self.winfo_height()
+        self.delete("bg")
+        self.create_polygon(round_pts(1, 1, w - 1, h - 1, self.radius), smooth=True, fill=self.bgc,
+                            outline=self.border, tags="bg")
+        self.tag_lower("bg")
+
+    def recolor(self, bg, border):
+        self.bgc, self.border = bg, border
+        self.body.configure(bg=bg)
+        self._redraw()
+
+
+class RoundButton(tk.Canvas):
+    """Rounded button: filled (primary / secondary) or outlined."""
+
+    def __init__(self, master, text, command, fill=PANEL3, hover=LINE, fg=INK, outline=None, font=FONT_B,
+                 padx=18, pady=9, parent_bg=CARD, icon=None, radius=10):
+        f = tkfont.Font(font=font)
+        iw = 24 if icon else 0
+        w, h = f.measure(text) + 2 * padx + iw, f.metrics("linespace") + 2 * pady
+        super().__init__(master, width=w, height=h, bg=parent_bg, highlightthickness=0, cursor="hand2")
+        self._fill, self._hover, self._outline = fill, hover, outline or fill
+        self._poly = self.create_polygon(round_pts(1, 1, w - 1, h - 1, radius), smooth=True, fill=fill,
+                                         outline=self._outline, width=1.5 if outline else 1)
+        if icon:
+            draw_icon(self, icon, padx + 8, h / 2, 8, fg)
+        self.create_text(padx + iw + f.measure(text) / 2, h / 2, text=text, fill=fg, font=font)
+        self.bind("<Enter>", lambda e: self.itemconfigure(self._poly, fill=self._hover))
+        self.bind("<Leave>", lambda e: self.itemconfigure(self._poly, fill=self._fill))
+        self.bind("<Button-1>", lambda e: command())
+
+
+class NavItem(tk.Canvas):
+    """Sidebar navigation entry."""
+
+    def __init__(self, master, text, icon, command, width=206, height=46):
+        super().__init__(master, width=width, height=height, bg=SIDEBAR, highlightthickness=0, cursor="hand2")
+        self.text, self.icon, self.w, self.h = text, icon, width, height
+        self.active, self.hover = False, False
+        self.bind("<Button-1>", lambda e: command())
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+        self._draw()
+
+    def _set_hover(self, v):
+        self.hover = v
+        self._draw()
+
+    def set_active(self, v):
+        self.active = v
+        self._draw()
+
+    def _draw(self):
+        self.delete("all")
+        if self.active:
+            self.create_polygon(round_pts(1, 1, self.w - 1, self.h - 1, 22), smooth=True, fill=ACTIVE_BG, outline=ACCENT, width=1.5)
+        elif self.hover:
+            self.create_polygon(round_pts(1, 1, self.w - 1, self.h - 1, 22), smooth=True, fill=CARD2, outline=CARD2)
+        draw_icon(self, self.icon, 32, self.h / 2, 10, ACCENT_HOVER if self.active else INK_DIM)
+        self.create_text(60, self.h / 2, text=self.text, anchor="w", fill=INK if (self.active or self.hover) else INK_DIM,
+                         font=("Segoe UI", 11, "bold" if self.active else "normal"))
+
+
+class Pill(tk.Canvas):
+    """Rounded status badge, e.g. '(dot) Normal'."""
+
+    def __init__(self, master, text="", color=OK, parent_bg=CARD, width=104, height=26, dot=True):
+        super().__init__(master, width=width, height=height, bg=parent_bg, highlightthickness=0)
+        self.w, self.h, self.dot, self.parent_bg = width, height, dot, parent_bg
+        self.set(text, color)
+
+    def set(self, text, color):
+        self.delete("all")
+        self.create_polygon(round_pts(1, 1, self.w - 1, self.h - 1, self.h / 2 - 1), smooth=True,
+                            fill=blend(color, self.parent_bg, .2), outline=blend(color, self.parent_bg, .45))
+        if self.dot:
+            self.create_oval(14, self.h / 2 - 3, 20, self.h / 2 + 3, fill=color, outline="")
+            self.create_text(self.w / 2 + 6, self.h / 2, text=text, fill=color, font=FONT_SMALL_B)
+        else:
+            self.create_text(self.w / 2, self.h / 2, text=text, fill=color, font=FONT_SMALL_B)
+
+
+class Bar(tk.Canvas):
+    """Thin rounded progress bar."""
+
+    def __init__(self, master, parent_bg=CARD, color=OK, height=6):
+        super().__init__(master, width=20, height=height, bg=parent_bg, highlightthickness=0)
+        self.frac, self.color, self.hh = 0.0, color, height
+        self.bind("<Configure>", lambda e: self._draw())
+
+    def set(self, frac, color):
+        self.frac, self.color = max(0.0, min(1.0, frac)), color
+        self._draw()
+
+    def _draw(self):
+        self.delete("all")
+        w, y = max(self.winfo_width(), 20), self.hh / 2
+        self.create_line(3, y, w - 3, y, width=self.hh, capstyle="round", fill=TRACK)
+        if self.frac > 0.001:
+            self.create_line(3, y, 3 + (w - 6) * self.frac, y, width=self.hh, capstyle="round", fill=self.color)
+
+
+def autowrap(card, label, margin=4):
+    """Keep a label's wrap width equal to its card's inner width."""
+    card.body.bind("<Configure>", lambda e: label.configure(wraplength=max(160, e.width - margin)), add="+")
 
 
 class RoundGauge(tk.Canvas):
     def __init__(self, master, size=140, **kw):
-        kw.setdefault("bg", BG)
+        kw.setdefault("bg", CARD)
         super().__init__(master, width=size, height=size, highlightthickness=0, **kw)
         self.size, self.value = size, 0
         self._draw(0, OK)
@@ -101,7 +351,7 @@ class RoundGauge(tk.Canvas):
     def _draw(self, value, color):
         self.delete("all")
         s, pad = self.size, 10
-        self.create_oval(pad, pad, s - pad, s - pad, outline=PANEL3, width=10)
+        self.create_oval(pad, pad, s - pad, s - pad, outline=TRACK, width=10)
         if value > 0:
             self.create_arc(pad, pad, s - pad, s - pad, start=90, extent=-3.6 * value,
                             outline=color, width=10, style="arc")
@@ -126,11 +376,14 @@ class AstroSense(tk.Tk):
         self.title("AstroSense \u2014 Spacecraft Diagnostics Console")
         self.configure(bg=BG)
         self.geometry(f"1320x{min(900, self.winfo_screenheight() - 70)}")
-        self.minsize(1050, 680)
+        self.minsize(1120, 700)
         self.entries, self.scales, self._calc = {}, {}, None
         self.det, self.log_raw, self.log_name, self._tl = Detector(), None, "", None
         self._blink_job, self._blink_state = None, False
         self.trees_var, self.cont_var = tk.IntVar(value=200), tk.DoubleVar(value=0.01)
+        self.page, self.hist, self.activity, self.processed, self._dots = "dashboard", [], [], 0, []
+        rnd = random.Random(7)
+        self._stars = [(rnd.random(), rnd.random(), rnd.choice((.8, 1, 1.4))) for _ in range(46)]
         self._build_style()
         self._build_menu()
         self._build_layout()
@@ -138,13 +391,20 @@ class AstroSense(tk.Tk):
         self.load_sample()
         self.bind("<Return>", lambda e: self.run_diagnostics())
         self._tick_clock()
+        self.after(350, self._startup_run)
+
+    def _startup_run(self):
+        try:
+            self._run_manual()          # nominal sample so the dashboard starts populated
+        except Exception:
+            pass
 
     # ---------- style / menu ----------
     def _build_style(self):
         st = ttk.Style(self)
         st.theme_use("clam")
-        st.configure("TNotebook", background=PANEL, borderwidth=0, tabmargins=(2, 2, 2, 0))
-        st.configure("TNotebook.Tab", background=PANEL2, foreground=INK_DIM, padding=(16, 10),
+        st.configure("TNotebook", background=CARD, borderwidth=0, tabmargins=(0, 0, 0, 0))
+        st.configure("TNotebook.Tab", background=CARD2, foreground=INK_DIM, padding=(12, 7),
                      font=FONT_BOLD, borderwidth=0)
         st.map("TNotebook.Tab", background=[("selected", ACCENT), ("active", PANEL3)],
                foreground=[("selected", "white"), ("active", INK)])
@@ -173,166 +433,354 @@ class AstroSense(tk.Tk):
         self.config(menu=bar)
 
     def _show_method(self):
-        messagebox.showinfo(
-            "How the score works",
-            "1. Broken rows (missing / non-numeric values) are removed.\n"
-            "2. Min-Max Scaling puts every sensor on a 0-1 scale.\n"
-            "3. Isolation Forest learns the healthy pattern from the training data.\n"
-            "4. Sensor health: every sensor is compared with its nominal range. Inside the range = 100 %; "
-            "outside, it falls in a straight line to 0 % at the sensor's hard limit. The sensor healths are "
-            "multiplied (a series system: every part must work).\n"
-            "5. Pattern health: the Isolation Forest anomaly score is converted to 0-100 % "
-            "(100 = as healthy as training data, 80 = flagging threshold, 0 = every sensor at its limit).\n"
-            "   Record health = the lower of steps 4 and 5.\n"
-            "   System Health Score = mean record health x share of unflagged records.\n"
-            "6. For flagged records, the sensors that deviate most (in standard deviations "
-            "from the healthy mean) become the warning checklist.\n\n"
-            "Prototype: the built-in baseline is synthetic. Use real healthy telemetry for real results.")
+        messagebox.showinfo("How the score works", METHOD_TEXT)
 
-    # ---------- layout ----------
+    # ---------- layout: sidebar + header + pages ----------
     def _build_layout(self):
-        head = tk.Frame(self, bg=BG)
-        head.pack(fill="x", padx=28, pady=(22, 16))
-        logo = tk.Canvas(head, width=34, height=34, bg=BG, highlightthickness=0)
-        logo.create_oval(3, 3, 31, 31, outline=ACCENT, width=2)
-        logo.create_oval(12, 12, 22, 22, fill=ACCENT, outline="")
-        logo.pack(side="left", padx=(0, 12))
-        titles = tk.Frame(head, bg=BG)
-        titles.pack(side="left")
-        tk.Label(titles, text="AstroSense", bg=BG, fg=INK, font=FONT_TITLE).pack(anchor="w")
-        tk.Label(titles, text="Isolation Forest diagnostics for spacecraft telemetry", bg=BG, fg=INK_DIM,
-                 font=FONT_SUB).pack(anchor="w")
-        self.clock_lbl = tk.Label(head, bg=BG, fg=INK_DIM, font=FONT_MONO)
-        self.clock_lbl.pack(side="right")
-        dot = tk.Canvas(head, width=10, height=10, bg=BG, highlightthickness=0)
-        dot.create_oval(1, 1, 9, 9, fill=OK, outline="")
-        dot.pack(side="right", padx=8)
-        tk.Frame(self, bg=LINE, height=1).pack(fill="x", padx=28)
+        self._build_sidebar()
+        main = tk.Frame(self, bg=BG)
+        main.pack(side="left", fill="both", expand=True)
+        self.hdr = tk.Canvas(main, height=100, bg=BG, highlightthickness=0)
+        self.hdr.pack(fill="x")
+        self.hdr.bind("<Configure>", lambda e: self._draw_header())
+        self.holder = tk.Frame(main, bg=BG)
+        self.holder.pack(fill="both", expand=True, padx=26, pady=(4, 18))
+        self.pages = {}
+        for name, builder in (("dashboard", self._build_dashboard), ("data", self._build_data_page),
+                              ("diagnostics", self._build_diag_page), ("about", self._build_about_page)):
+            f = tk.Frame(self.holder, bg=BG)
+            self.pages[name] = f
+            builder(f)
+        self.show_page("dashboard")
 
-        self._build_units_footer()
-        body = tk.Frame(self, bg=BG)
-        body.pack(fill="both", expand=True, padx=28, pady=(18, 14))
-        body.columnconfigure(0, weight=6)
-        body.columnconfigure(1, weight=5)
-        body.rowconfigure(0, weight=1)
-        self._build_input_panel(body)
-        self._build_result_panel(body)
+    def show_page(self, name):
+        for f in self.pages.values():
+            f.pack_forget()
+        self.pages[name].pack(fill="both", expand=True)
+        self.page = name
+        for n, item in self.nav.items():
+            item.set_active(n == name)
+        self._draw_header()
+        if name == "data":
+            self._draw_timeline()
+        elif name == "dashboard":
+            self._draw_overview()
+        elif name == "diagnostics":
+            self._update_units()
 
-    def _build_units_footer(self):
-        """Box at the bottom: measuring units used on the tab that is open."""
-        foot = tk.Frame(self, bg=PANEL, highlightthickness=1, highlightbackground=LINE)
-        foot.pack(side="bottom", fill="x", padx=28, pady=(0, 18))
-        tk.Label(foot, text="UNITS", bg=PANEL, fg=ACCENT, font=FONT_CAP).pack(side="left", anchor="n",
-                                                                           padx=(14, 12), pady=(10, 0))
-        self.units_lbl = tk.Label(foot, bg=PANEL, fg=INK, font=FONT_SMALL, anchor="w", justify="left",
-                                  wraplength=900)
-        self.units_lbl.pack(side="left", fill="x", expand=True, padx=(0, 14), pady=8)
-        foot.bind("<Configure>", lambda e: self.units_lbl.configure(wraplength=max(200, e.width - 110)))
+    def _build_sidebar(self):
+        sb = tk.Frame(self, bg=SIDEBAR, width=250)
+        sb.pack(side="left", fill="y")
+        sb.pack_propagate(False)
+        tk.Frame(self, bg=LINE, width=1).pack(side="left", fill="y")
+        logo = tk.Canvas(sb, width=250, height=104, bg=SIDEBAR, highlightthickness=0)
+        logo.pack(pady=(26, 0))
+        logo.create_oval(68, 24, 182, 84, outline=ACCENT, width=3)
+        draw_icon(logo, "star4", 125, 54, 17, ACCENT_HOVER)
+        for dx, dy in ((84, 16), (176, 44), (88, 74)):
+            logo.create_oval(dx - 1.5, dy - 1.5, dx + 1.5, dy + 1.5, fill=ACCENT_HOVER, outline="")
+        tk.Label(sb, text="AstroSense", bg=SIDEBAR, fg=INK, font=("Segoe UI", 20, "bold")).pack()
+        tk.Label(sb, text="Monitor \u2022 Analyze \u2022 Stay Ahead", bg=SIDEBAR, fg=INK_DIM,
+                 font=FONT_SMALL).pack(pady=(0, 28))
+        self.nav = {}
+        for name, label, icon in (("dashboard", "Dashboard", "home"), ("data", "Data", "data"),
+                                  ("diagnostics", "Diagnostics", "tools"), ("about", "About", "info")):
+            it = NavItem(sb, label, icon, lambda n=name: self.show_page(n))
+            it.pack(pady=4)
+            self.nav[name] = it
+        earth = tk.Canvas(sb, height=210, bg=SIDEBAR, highlightthickness=0)
+        earth.pack(side="bottom", fill="x")
+        earth.bind("<Configure>", lambda e: self._draw_earth(earth))
 
-    def _update_units(self, _=None):
-        i = self.nb.index(self.nb.select())
-        self.units_lbl.configure(text="Open a sensor tab (Power, Propulsion, ...) to see its measuring units."
-                                 if i == 0 else units_text(GROUPS[i - 1][0]))
+    def _draw_earth(self, c):
+        c.delete("all")
+        w, h = max(c.winfo_width(), 250), 210
+        for fx, fy, r in self._stars[:14]:
+            c.create_oval(fx * w - r, fy * 90 - r, fx * w + r, fy * 90 + r, fill="#5f77a8", outline="")
+        c.create_oval(-150, 80, w + 150, h + 420, fill="#0a2550", outline=ACCENT, width=2)
+        c.create_oval(-130, 100, w + 130, h + 420, fill="#0c2d5e", outline="#1d4f9e")
+        c.create_text(22, 128, anchor="nw", text="Keeping your\nspacecraft healthier\nfor a safer tomorrow.",
+                      fill=INK, font=("Segoe UI", 10, "italic"))
+        c.create_line(22, 192, 64, 192, fill=ACCENT, width=2)
 
-    def _build_input_panel(self, parent):
-        left = tk.Frame(parent, bg=PANEL, highlightthickness=1, highlightbackground=LINE)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
-        tk.Label(left, text="Telemetry Input", bg=PANEL, fg=INK, font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=20, pady=(18, 4))
-        sub = tk.Label(left, text="Data tab: train on healthy data and check an uploaded log.   "
-                                  "Sensor tabs: check a single manual reading.",
-                       bg=PANEL, fg=INK_DIM, font=FONT_SMALL, justify="left", wraplength=560)
-        sub.pack(anchor="w", padx=20, pady=(0, 12))
-        left.bind("<Configure>", lambda e: sub.configure(wraplength=max(200, e.width - 40)))
-        tk.Label(left, text="Press Enter to run diagnostics for the open tab.", bg=PANEL, fg=INK_DIM,
-                 font=FONT_SMALL).pack(side="bottom", anchor="w", padx=20, pady=(0, 14))
-        btns = tk.Frame(left, bg=PANEL)
-        btns.pack(side="bottom", fill="x", padx=20, pady=(12, 10))
-        tk.Frame(left, bg=LINE, height=1).pack(side="bottom", fill="x")
-        HoverButton(btns, ACCENT, ACCENT_HOVER, text="Run Diagnostics", font=FONT_BOLD,
-                    padx=18, pady=9, command=self.run_diagnostics).pack(side="left", padx=(0, 10))
-        for txt, cmd in (("Nominal Sample", self.load_sample), ("Simulate Fault", self.load_fault),
-                         ("Clear", self.clear_all)):
-            HoverButton(btns, PANEL3, LINE, fg=INK, text=txt, padx=14, pady=9, command=cmd).pack(side="left", padx=(0, 8))
-        self.nb = ttk.Notebook(left)
-        self.nb.pack(fill="both", expand=True, padx=16, pady=(4, 10))
+    def _draw_header(self):
+        c = self.hdr
+        c.delete("all")
+        w, h = max(c.winfo_width(), 900), 100
+        for fx, fy, r in self._stars:
+            c.create_oval(fx * w - r, fy * h - r, fx * w + r, fy * h + r, fill="#5f77a8", outline="")
+        c.create_oval(w - 580, 74, w + 280, 640, outline="#1b4a99", width=2, fill="#081a3c")
+        c.create_oval(w - 566, 80, w + 266, 640, outline="#2f78e0", width=2, fill="#0a1f47")
+        draw_satellite(c, w - 380, 46, 0.9)
+        # date pill
+        c.create_polygon(round_pts(w - 262, 22, w - 26, 62, 20), smooth=True, fill=CARD, outline=LINE)
+        draw_icon(c, "calendar", w - 238, 42, 8, ACCENT_HOVER, 1)
+        c.create_text(w - 142, 42, text="", fill=INK, font=FONT_B, tags="date_txt")
+        self._set_date()
+        x0 = 30
+        if self.page == "dashboard":
+            t1 = c.create_text(x0, 38, anchor="w", text="Welcome to ", fill=INK, font=FONT_WELCOME)
+            bb = c.bbox(t1)
+            x1 = bb[2] if bb else x0 + 190
+            t2 = c.create_text(x1, 38, anchor="w", text="AstroSense", fill=ACCENT_HOVER, font=FONT_WELCOME)
+            bb = c.bbox(t2)
+            x2 = bb[2] if bb else x1 + 170
+            draw_icon(c, "star4", x2 + 24, 36, 13, "#ffcb47")
+            sub = "Your Spacecraft Diagnostics Console"
+        else:
+            titles = {"data": ("Data", "Train the model on healthy telemetry and check an uploaded log"),
+                      "diagnostics": ("Diagnostics", "Check a single manual sensor reading and read the report"),
+                      "about": ("About", "How AstroSense turns telemetry into a health score")}
+            title, sub = titles[self.page]
+            c.create_text(x0, 38, anchor="w", text=title, fill=INK, font=FONT_TITLE)
+        c.create_text(x0, 74, anchor="w", text=sub, fill=INK_DIM, font=FONT_ITALIC)
+
+    def _set_date(self):
+        self.hdr.itemconfigure("date_txt", text=time.strftime("%b %d, %Y   |   %H:%M:%S"))
+
+    def _tick_clock(self):
+        self._set_date()
+        self.after(1000, self._tick_clock)
+
+    # ---------- small builders ----------
+    def _card_title(self, body, icon, text, color=ACCENT_HOVER, link=None, cmd=None):
+        row = tk.Frame(body, bg=CARD)
+        row.pack(fill="x", pady=(0, 8))
+        ic = tk.Canvas(row, width=28, height=28, bg=CARD, highlightthickness=0)
+        ic.pack(side="left")
+        draw_icon(ic, icon, 14, 14, 9, color)
+        tk.Label(row, text=text, bg=CARD, fg=INK, font=FONT_H).pack(side="left", padx=(8, 0))
+        if link:
+            lk = tk.Label(row, text=link + "  \u2192", bg=CARD, fg=ACCENT_HOVER, font=FONT_BOLD, cursor="hand2")
+            lk.pack(side="right")
+            lk.bind("<Button-1>", lambda e: cmd())
+        return row
+
+    def _kpi(self, parent, col, icon, tint, title, value, badge=False, dot=False):
+        card = Card(parent, pad=14)
+        card.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 7, 0 if col == 3 else 7))
+        b = card.body
+        b.columnconfigure(1, weight=1)
+        ic = tk.Canvas(b, width=58, height=58, bg=CARD, highlightthickness=0)
+        ic.grid(row=0, column=0, rowspan=2, padx=(0, 12))
+        ic.create_oval(2, 2, 56, 56, fill=blend(tint, CARD, .22), outline=blend(tint, CARD, .55))
+        draw_icon(ic, icon, 29, 29, 13, tint)
+        tk.Label(b, text=title, bg=CARD, fg=INK, font=FONT_B).grid(row=0, column=1, sticky="sw")
+        vf = tk.Frame(b, bg=CARD)
+        vf.grid(row=1, column=1, sticky="nw")
+        val = tk.Label(vf, text=value, bg=CARD, fg=INK, font=("Segoe UI", 22, "bold"))
+        val.pack(side="left")
+        extra = None
+        if badge:
+            extra = Pill(vf, "Healthy", OK, width=92, dot=False)
+            extra.pack(side="left", padx=(14, 0))
+        elif dot:
+            extra = tk.Canvas(vf, width=12, height=12, bg=CARD, highlightthickness=0)
+            extra.pack(side="left", padx=(10, 0), pady=(8, 0))
+            self._dots.append(extra)
+        bar = Bar(b, color=tint)
+        bar.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        return val, bar, extra
+
+    # ---------- Dashboard ----------
+    def _build_dashboard(self, page):
+        kp = tk.Frame(page, bg=BG)
+        kp.pack(fill="x")
+        for i in range(4):
+            kp.columnconfigure(i, weight=1, uniform="kpi")
+        self.k_health, self.k_health_bar, self.k_badge = self._kpi(kp, 0, "pulse", ACCENT, "Spacecraft Health", "\u2014", badge=True)
+        self.k_data, self.k_data_bar, _ = self._kpi(kp, 1, "data", PURPLE, "Data Processed", "0")
+        self.k_alert, self.k_alert_bar, _ = self._kpi(kp, 2, "warn", WARN, "Alerts", "0")
+        self.k_status, self.k_status_bar, self.k_dot = self._kpi(kp, 3, "shield", OK, "System Status", "\u2014", dot=True)
+
+        mid = tk.Frame(page, bg=BG)
+        mid.pack(fill="both", expand=True, pady=(12, 0))
+        mid.columnconfigure(0, weight=2, uniform="m")
+        mid.columnconfigure(1, weight=1, uniform="m")
+        mid.rowconfigure(0, weight=1)
+        ch = Card(mid)
+        ch.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
+        self._card_title(ch.body, "bars", "Telemetry Overview", link="View Details",
+                         cmd=lambda: self.show_page("diagnostics"))
+        self.ov = tk.Canvas(ch.body, height=OV_H, bg=CARD, highlightthickness=0)
+        self.ov.pack(fill="x")
+        self.ov.bind("<Configure>", lambda e: self._draw_overview())
+        lg = tk.Frame(ch.body, bg=CARD)
+        lg.pack(pady=(4, 0))
+        d = tk.Canvas(lg, width=10, height=10, bg=CARD, highlightthickness=0)
+        d.create_oval(0, 0, 10, 10, fill=ACCENT, outline="")
+        d.pack(side="left", padx=(0, 6))
+        tk.Label(lg, text="Health Score", bg=CARD, fg=INK_DIM, font=FONT_SMALL).pack(side="left")
+
+        sc = Card(mid)
+        sc.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+        self._card_title(sc.body, "chip", "Subsystem Status")
+        self.sub_pills = {}
+        for gid, gname, _ in GROUPS:
+            row = tk.Frame(sc.body, bg=CARD2)
+            row.pack(fill="x", pady=3)
+            ic = tk.Canvas(row, width=34, height=34, bg=CARD2, highlightthickness=0)
+            ic.pack(side="left", padx=(8, 4), pady=3)
+            draw_icon(ic, GROUP_ICON[gid], 17, 17, 9, ACCENT_HOVER)
+            tk.Label(row, text=gname, bg=CARD2, fg=INK, font=FONT_B).pack(side="left", padx=6)
+            pill = Pill(row, "Normal", OK, parent_bg=CARD2, width=96)
+            pill.pack(side="right", padx=8)
+            self.sub_pills[gid] = pill
+
+        bot = tk.Frame(page, bg=BG)
+        bot.pack(fill="x", pady=(12, 0))
+        bot.columnconfigure(0, weight=1, uniform="b")
+        bot.columnconfigure(1, weight=1, uniform="b")
+        qa = Card(bot)
+        qa.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
+        self._card_title(qa.body, "bolt", "Quick Actions")
+        br = tk.Frame(qa.body, bg=CARD)
+        br.pack(fill="x", pady=(6, 0))
+        RoundButton(br, "Upload Telemetry Log", self.upload_log, fill=ACCENT, hover=ACCENT_HOVER, fg="white",
+                    font=FONT_BOLD, padx=22, pady=12, icon="upload").pack(side="left", padx=(0, 12))
+        RoundButton(br, "Run Diagnostics", self.run_diagnostics, fill=CARD, hover=CARD2, fg=INK, outline=ACCENT,
+                    font=FONT_BOLD, padx=22, pady=12, icon="play").pack(side="left")
+        ra = Card(bot)
+        ra.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+        self._card_title(ra.body, "clock", "Recent Activity", link="View All", cmd=self._show_activity)
+        self.act_box = tk.Frame(ra.body, bg=CARD)
+        self.act_box.pack(fill="x")
+        self._render_activity()
+
+    def _log_event(self, text, kind="ok"):
+        self.activity.insert(0, (time.strftime("%H:%M:%S"), text, kind))
+        self.activity = self.activity[:60]
+        self._render_activity()
+
+    def _render_activity(self):
+        for w in self.act_box.winfo_children():
+            w.destroy()
+        if not self.activity:
+            tk.Label(self.act_box, text="No activity yet.", bg=CARD, fg=INK_DIM, font=FONT_B).pack(anchor="w")
+        for stamp, text, kind in self.activity[:3]:
+            col, icon = {"ok": (OK, "check"), "warn": (WARN, "warn")}.get(kind, (ACCENT_HOVER, "clock"))
+            row = tk.Frame(self.act_box, bg=CARD)
+            row.pack(fill="x", pady=3)
+            ic = tk.Canvas(row, width=30, height=30, bg=CARD, highlightthickness=0)
+            ic.pack(side="left", padx=(0, 10))
+            ic.create_oval(1, 1, 29, 29, fill=blend(col, CARD, .25), outline="")
+            draw_icon(ic, icon, 15, 15, 7, col, 2)
+            tf = tk.Frame(row, bg=CARD)
+            tf.pack(side="left", fill="x")
+            tk.Label(tf, text=text, bg=CARD, fg=INK, font=FONT_B, wraplength=420, justify="left").pack(anchor="w")
+            tk.Label(tf, text=stamp, bg=CARD, fg=INK_DIM, font=FONT_SMALL).pack(anchor="w")
+
+    def _show_activity(self):
+        win = tk.Toplevel(self, bg=BG)
+        win.title("Activity log")
+        win.geometry("640x420")
+        txt = tk.Text(win, bg=CARD, fg=INK, font=FONT_B, wrap="word", relief="flat", padx=14, pady=10)
+        txt.pack(fill="both", expand=True)
+        for stamp, text, _ in self.activity:
+            txt.insert("end", f"{stamp}   {text}\n\n")
+        txt.configure(state="disabled")
+
+    def _draw_overview(self):
+        c = self.ov
+        c.delete("all")
+        w, h = max(c.winfo_width(), 300), OV_H
+        pl, pr, pt, pb = 44, 18, 14, 30
+        y_of = lambda v: pt + (h - pt - pb) * (1 - v / 100)
+        pts = self.hist
+        n = len(pts)
+        x_of = lambda i: pl + (w - pl - pr) * (i / (n - 1) if n > 1 else 0.5)
+        if n >= 2:
+            area = [x_of(0), y_of(0)]
+            for i, (_, v) in enumerate(pts):
+                area += [x_of(i), y_of(v)]
+            area += [x_of(n - 1), y_of(0)]
+            c.create_polygon(*area, fill=blend(ACCENT, CARD, .3), outline="")
+        for v in (0, 25, 50, 75, 100):
+            c.create_line(pl, y_of(v), w - pr, y_of(v), fill=LINE)
+            c.create_text(pl - 8, y_of(v), text=str(v), fill=INK_DIM, font=FONT_SMALL, anchor="e")
+        if not pts:
+            c.create_text(w / 2, h / 2, text="Run diagnostics to build the health history", fill=INK_DIM, font=FONT_B)
+            return
+        step = max(1, -(-n // 6))
+        for i, (stamp, v) in enumerate(pts):
+            if i % step == 0 or i == n - 1:
+                c.create_line(x_of(i), pt, x_of(i), h - pb, fill=LINE)
+                c.create_text(x_of(i), h - pb + 14, text=stamp, fill=INK_DIM, font=FONT_SMALL)
+        if n >= 2:
+            line = []
+            for i, (_, v) in enumerate(pts):
+                line += [x_of(i), y_of(v)]
+            c.create_line(*line, fill=ACCENT, width=2.5, smooth=True)
+        for i, (_, v) in enumerate(pts):
+            c.create_oval(x_of(i) - 4, y_of(v) - 4, x_of(i) + 4, y_of(v) + 4, fill=ACCENT_HOVER, outline=CARD, width=2)
+
+    # ---------- Diagnostics (manual sensor tabs + report) ----------
+    def _build_diag_page(self, page):
+        page.columnconfigure(0, weight=6, uniform="d")
+        page.columnconfigure(1, weight=5, uniform="d")
+        page.rowconfigure(0, weight=1)
+        left = Card(page)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
+        b = left.body
+        self._card_title(b, "tools", "Manual Sensor Reading")
+        hint = tk.Label(b, text="Pick a subsystem tab and enter readings (type a value or drag the slider). "
+                                "Blank fields are treated as nominal.", bg=CARD, fg=INK_DIM, font=FONT_SMALL,
+                        justify="left", wraplength=520)
+        hint.pack(anchor="w", pady=(0, 6))
+        autowrap(left, hint)
+        self.nb = ttk.Notebook(b)
+        self.nb.pack(fill="x")
         self.nb.bind("<<NotebookTabChanged>>", self._update_units)
-        data = tk.Frame(self.nb, bg=PANEL)
-        self.nb.add(data, text="Data")
-        self._build_data_tab(data)
-        for gid, gname, icon in GROUPS:
-            tab = tk.Frame(self.nb, bg=PANEL)
+        for gid, gname, _ in GROUPS:
+            tab = tk.Frame(self.nb, bg=CARD)
             self.nb.add(tab, text=TAB_LABELS.get(gid, gname.split(" ")[0]))
             for f in [f for f in FIELDS if f["group"] == gid]:
                 self._build_field_row(tab, f)
-
+        br = tk.Frame(b, bg=CARD)
+        br.pack(fill="x", pady=(14, 6))
+        RoundButton(br, "Run Diagnostics", self.run_diagnostics, fill=ACCENT, hover=ACCENT_HOVER, fg="white",
+                    font=FONT_BOLD, padx=18, pady=9, icon="play").pack(side="left", padx=(0, 10))
+        for txt, cmd in (("Nominal Sample", self.load_sample), ("Simulate Fault", self.load_fault), ("Clear", self.clear_all)):
+            RoundButton(br, txt, cmd, fill=PANEL3, hover=LINE, padx=14, pady=9).pack(side="left", padx=(0, 8))
+        tk.Frame(b, bg=LINE, height=1).pack(fill="x", pady=(6, 8))
+        ur = tk.Frame(b, bg=CARD)
+        ur.pack(fill="x")
+        tk.Label(ur, text="UNITS", bg=CARD, fg=ACCENT_HOVER, font=FONT_CAP).pack(side="left", anchor="n", padx=(0, 10), pady=(2, 0))
+        self.units_lbl = tk.Label(ur, bg=CARD, fg=INK, font=FONT_SMALL, anchor="w", justify="left", wraplength=480)
+        self.units_lbl.pack(side="left", fill="x", expand=True)
+        ur.bind("<Configure>", lambda e: self.units_lbl.configure(wraplength=max(200, e.width - 70)))
+        tk.Label(b, text="Press Enter to run diagnostics.", bg=CARD, fg=INK_DIM, font=FONT_SMALL).pack(anchor="w", pady=(8, 0))
         self._update_units()
 
-    def _build_data_tab(self, tab):
-        def section(n, t):
-            h = tk.Frame(tab, bg=PANEL)
-            h.pack(fill="x", padx=16, pady=(16, 4))
-            tk.Label(h, text=str(n), bg=ACCENT, fg="white", font=FONT_CAP, width=2).pack(side="left", padx=(0, 8))
-            tk.Label(h, text=t, bg=PANEL, fg=INK, font=FONT_H).pack(side="left")
+        right = tk.Frame(page, bg=BG)
+        right.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+        self._build_result_panel(right)
 
-        def row():
-            r = tk.Frame(tab, bg=PANEL)
-            r.pack(fill="x", padx=16, pady=5)
-            return r
-
-        section(1, "Healthy baseline (model training)")
-        self.base_lbl = tk.Label(tab, bg=PANEL, fg=INK_DIM, font=FONT_SMALL, wraplength=520, justify="left")
-        self.base_lbl.pack(anchor="w", padx=16)
-        r = row()
-        for txt, cmd in (("Load healthy CSV...", self.load_baseline_csv), ("Use built-in baseline", self.use_builtin),
-                         ("Retrain", self.retrain)):
-            HoverButton(r, PANEL3, LINE, fg=INK, text=txt, padx=12, pady=6, command=cmd).pack(side="left", padx=(0, 6))
-        r = row()
-        tk.Label(r, text="Trees", bg=PANEL, fg=INK_DIM, font=FONT_SMALL).pack(side="left")
-        ttk.Spinbox(r, from_=50, to=500, increment=50, textvariable=self.trees_var, width=6,
-                    style="Dark.TSpinbox").pack(side="left", padx=(6, 18))
-        tk.Label(r, text="Expected anomalies", bg=PANEL, fg=INK_DIM, font=FONT_SMALL).pack(side="left")
-        ttk.Spinbox(r, from_=0.001, to=0.2, increment=0.005, format="%.3f", textvariable=self.cont_var, width=7,
-                    style="Dark.TSpinbox").pack(side="left", padx=6)
-
-        section(2, "Telemetry log to check")
-        r = row()
-        HoverButton(r, ACCENT, ACCENT_HOVER, text="Upload log CSV...", font=FONT_BOLD,
-                    padx=14, pady=7, command=self.upload_log).pack(side="left")
-        self.log_lbl = tk.Label(tab, text="No log uploaded yet.", bg=PANEL, fg=INK_DIM, font=FONT_SMALL,
-                                wraplength=520, justify="left")
-        self.log_lbl.pack(anchor="w", padx=16)
-
-        section(3, "Health score over time")
-        self.tl = tk.Canvas(tab, bg=BG, height=130, highlightthickness=1, highlightbackground=LINE)
-        self.tl.pack(fill="x", padx=16, pady=(2, 10))
-        self.tl.bind("<Configure>", lambda e: self._draw_timeline())
-
-        def rewrap(e):
-            for w in (self.base_lbl, self.log_lbl):
-                w.configure(wraplength=max(200, e.width - 36))
-        tab.bind("<Configure>", rewrap)
+    def _update_units(self, _=None):
+        i = self.nb.index(self.nb.select())
+        self.units_lbl.configure(text=units_text(GROUPS[i][0]))
 
     def _build_field_row(self, parent, f):
-        row = tk.Frame(parent, bg=PANEL)
-        row.pack(fill="x", padx=16, pady=(12, 0))
-        top = tk.Frame(row, bg=PANEL)
+        row = tk.Frame(parent, bg=CARD)
+        row.pack(fill="x", padx=2, pady=(12, 0))
+        top = tk.Frame(row, bg=CARD)
         top.pack(fill="x")
-        lbl = tk.Label(top, text=f["label"], bg=PANEL, fg=INK, font=FONT_BOLD, cursor="question_arrow")
+        lbl = tk.Label(top, text=f["label"], bg=CARD, fg=INK, font=FONT_BOLD, cursor="question_arrow")
         lbl.pack(side="left")
         Tooltip(lbl, f'Range: {f["min"]}\u2013{f["max"]} {f["unit"]}\n{f["src"][:110]}')
         var = tk.StringVar()
         tk.Entry(top, textvariable=var, width=10, bg=BG, fg=INK, insertbackground=INK, relief="flat",
-                 highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT_HOVER, font=FONT_MONO,
+                 highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT, font=FONT_MONO,
                  justify="right").pack(side="right", ipady=2)
-        tk.Label(top, text=f["unit"], bg=PANEL, fg=INK_DIM, font=FONT_SMALL).pack(side="right", padx=(4, 8))
-        tk.Label(row, text=f'Nominal {f["min"]}\u2013{f["max"]} {f["unit"]}', bg=PANEL, fg=INK_DIM,
+        tk.Label(top, text=f["unit"], bg=CARD, fg=INK_DIM, font=FONT_SMALL).pack(side="right", padx=(4, 8))
+        tk.Label(row, text=f'Nominal {f["min"]}\u2013{f["max"]} {f["unit"]}', bg=CARD, fg=INK_DIM,
                  font=FONT_SMALL).pack(anchor="w")
         lo, hi = f["hard_min"], f["hard_max"]
         scale = tk.Scale(row, from_=lo, to=hi, orient="horizontal", resolution=(hi - lo) / 200, showvalue=False,
-                         bg=PANEL, troughcolor="#354A63", highlightthickness=0, bd=0, sliderrelief="flat",
+                         bg=CARD, troughcolor=PANEL3, highlightthickness=0, bd=0, sliderrelief="flat",
                          length=300, activebackground=ACCENT)
         scale.pack(fill="x", pady=(4, 0))
-        tk.Frame(parent, bg=LINE, height=1).pack(fill="x", padx=16, pady=(10, 0))
+        tk.Frame(parent, bg=LINE, height=1).pack(fill="x", padx=2, pady=(10, 0))
         busy = {"f": False}
 
         def sync_from_scale():              # only when the USER moves the slider: copy its value into the box
@@ -352,74 +800,125 @@ class AstroSense(tk.Tk):
         var.trace_add("write", on_entry)
         self.entries[f["key"]], self.scales[f["key"]] = var, scale
 
-    def _build_result_panel(self, parent):
-        right = tk.Frame(parent, bg=BG)
-        right.grid(row=0, column=1, sticky="nsew")
+    def _build_result_panel(self, right):
         top = tk.Frame(right, bg=BG)
-        top.pack(fill="x", pady=(0, 10))
-        self.status_card = tk.Frame(top, bg=PANEL2, highlightthickness=1, highlightbackground=LINE)
+        top.pack(fill="x")
+        self.status_card = Card(top)
         self.status_card.pack(side="left", fill="both", expand=True, padx=(0, 10))
-        self.status_dot = tk.Canvas(self.status_card, width=14, height=14, bg=PANEL2, highlightthickness=0)
-        self.status_dot.pack(anchor="w", padx=20, pady=(20, 0))
-        self.status_title = tk.Label(self.status_card, text="Awaiting data", bg=PANEL2, fg=INK,
-                                     font=("Segoe UI", 14, "bold"))
-        self.status_title.pack(anchor="w", padx=20, pady=(8, 0))
-        self.status_sub = tk.Label(self.status_card, text="Upload a log or enter a reading, then run diagnostics.",
-                                   bg=PANEL2, fg=INK_DIM, font=FONT_B, wraplength=300, justify="left")
-        self.status_sub.pack(anchor="w", padx=20, pady=(4, 20))
-        gf = tk.Frame(top, bg=PANEL2, highlightthickness=1, highlightbackground=LINE)
-        gf.pack(side="left")
-        self.gauge = RoundGauge(gf, size=150, bg=PANEL2)
-        self.gauge.pack(padx=18, pady=(16, 8))
-        HoverButton(gf, PANEL3, LINE, fg=INK, text="Show calculation", font=FONT_SMALL, padx=10, pady=4,
-                    command=self._show_calc).pack(pady=(0, 14))
+        sb = self.status_card.body
+        self.status_dot = tk.Canvas(sb, width=14, height=14, bg=CARD, highlightthickness=0)
+        self.status_dot.pack(anchor="w", pady=(4, 0))
+        self._dots.append(self.status_dot)
+        self.status_title = tk.Label(sb, text="Awaiting data", bg=CARD, fg=INK, font=("Segoe UI", 14, "bold"))
+        self.status_title.pack(anchor="w", pady=(6, 0))
+        self.status_sub = tk.Label(sb, text="Enter a reading or upload a log, then run diagnostics.",
+                                   bg=CARD, fg=INK_DIM, font=FONT_B, wraplength=260, justify="left")
+        self.status_sub.pack(anchor="w", pady=(2, 4))
+        autowrap(self.status_card, self.status_sub)
+        gc = Card(top)
+        gc.pack(side="left", fill="y")
+        self.gauge = RoundGauge(gc.body, size=130, bg=CARD)
+        self.gauge.pack(pady=(0, 6))
+        RoundButton(gc.body, "Show calculation", self._show_calc, fill=PANEL3, hover=LINE, font=FONT_SMALL,
+                    padx=12, pady=5).pack()
 
         stats = tk.Frame(right, bg=BG)
-        stats.pack(fill="x", pady=(0, 6))
-        self.stat_health = self._stat_box(stats, "System status", "\u2014")
-        self.stat_flags = self._stat_box(stats, "Flagged records", "0")
-        self.stat_quality = self._stat_box(stats, "Input quality", "\u2014", last=True)
+        stats.pack(fill="x", pady=(10, 0))
+        for i in range(3):
+            stats.columnconfigure(i, weight=1, uniform="st")
+        self.stat_health = self._stat_box(stats, 0, "System status", "\u2014")
+        self.stat_flags = self._stat_box(stats, 1, "Flagged records", "0")
+        self.stat_quality = self._stat_box(stats, 2, "Input quality", "\u2014")
 
-        caption(right, "Warning checklist", pady=(12, 6))
-        self.chk_box = tk.Frame(right, bg=BG)
-        self.chk_box.pack(fill="x", pady=(0, 4))
-        tk.Label(self.chk_box, text="No analysis yet.", bg=BG, fg=INK_DIM, font=FONT_B).pack(anchor="w")
+        cc = Card(right)
+        cc.pack(fill="x", pady=(10, 0))
+        self._card_title(cc.body, "warn", "Warning Checklist", color=WARN)
+        self.chk_box = tk.Frame(cc.body, bg=CARD)
+        self.chk_box.pack(fill="x")
+        tk.Label(self.chk_box, text="No analysis yet.", bg=CARD, fg=INK_DIM, font=FONT_B).pack(anchor="w")
 
-        caption(right, "Subsystem status", pady=(12, 6))
-        sub_card = tk.Frame(right, bg=PANEL, highlightthickness=1, highlightbackground=LINE)
-        sub_card.pack(fill="x")
-        self.sub_box = tk.Frame(sub_card, bg=PANEL)
-        self.sub_box.pack(fill="x", padx=14, pady=8)
-        self.sub_box.columnconfigure((0, 1), weight=1)
-
-        self.insight_frame = tk.Frame(right, bg=INSIGHT_BG, highlightthickness=1, highlightbackground=ACCENT)
-        self.insight_frame.pack(fill="x", pady=(14, 0))
-        self.insight = tk.Label(self.insight_frame, text="No readings screened yet.", bg=INSIGHT_BG,
-                                fg=INK_DIM, font=FONT_B, wraplength=470, justify="left")
-        self.insight.pack(anchor="w", padx=14, pady=12)
+        self.insight_card = Card(right, bg=INSIGHT_BG, border=ACCENT)
+        self.insight_card.pack(fill="x", pady=(10, 0))
+        self.insight = tk.Label(self.insight_card.body, text="No readings screened yet.", bg=INSIGHT_BG,
+                                fg=INK_DIM, font=FONT_B, wraplength=440, justify="left")
+        self.insight.pack(anchor="w")
+        autowrap(self.insight_card, self.insight)
         self._set_dot(OK)
 
-        def rewrap(e):
-            self.insight.configure(wraplength=max(200, e.width - 48))
-            self.status_sub.configure(wraplength=max(160, e.width - 240))
-        right.bind("<Configure>", rewrap)
-
-    def _stat_box(self, parent, title, value, last=False):
-        box = tk.Frame(parent, bg=PANEL2, highlightthickness=1, highlightbackground=LINE)
-        box.pack(side="left", fill="both", expand=True, padx=(0, 0 if last else 10))
-        tk.Label(box, text=title.upper(), bg=PANEL2, fg=INK_DIM, font=FONT_CAP).pack(anchor="w", padx=14, pady=(12, 0))
-        v = tk.Label(box, text=value, bg=PANEL2, fg=INK, font=("Segoe UI", 14, "bold"))
-        v.pack(anchor="w", padx=14, pady=(4, 12))
+    def _stat_box(self, parent, col, title, value):
+        card = Card(parent, pad=12)
+        card.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 5, 0 if col == 2 else 5))
+        tk.Label(card.body, text=title.upper(), bg=CARD, fg=INK_DIM, font=FONT_CAP).pack(anchor="w")
+        v = tk.Label(card.body, text=value, bg=CARD, fg=INK, font=("Segoe UI", 14, "bold"))
+        v.pack(anchor="w", pady=(2, 0))
         return v
 
     def _set_dot(self, color):
-        self.status_dot.delete("all")
-        self.status_dot.create_oval(1, 1, 13, 13, fill=color, outline="")
+        for d in self._dots:
+            d.delete("all")
+            d.create_oval(1, 1, int(d["width"]) - 1, int(d["height"]) - 1, fill=color, outline="")
 
-    def _tick_clock(self):
-        self.clock_lbl.configure(text=time.strftime("%b %d, %Y   %H:%M:%S"))
-        self.after(1000, self._tick_clock)
+    # ---------- Data page ----------
+    def _build_data_page(self, page):
+        page.columnconfigure(0, weight=1, uniform="p")
+        page.columnconfigure(1, weight=1, uniform="p")
+        c1 = Card(page)
+        c1.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
+        b = c1.body
+        self._card_title(b, "data", "1 \u00B7 Healthy baseline (model training)")
+        self.base_lbl = tk.Label(b, bg=CARD, fg=INK_DIM, font=FONT_SMALL, wraplength=420, justify="left")
+        self.base_lbl.pack(anchor="w", pady=(0, 6))
+        autowrap(c1, self.base_lbl)
+        r = tk.Frame(b, bg=CARD)
+        r.pack(fill="x", pady=4)
+        for txt, cmd in (("Load healthy CSV...", self.load_baseline_csv), ("Use built-in baseline", self.use_builtin),
+                         ("Retrain", self.retrain)):
+            RoundButton(r, txt, cmd, fill=PANEL3, hover=LINE, padx=12, pady=7).pack(side="left", padx=(0, 6))
+        r = tk.Frame(b, bg=CARD)
+        r.pack(fill="x", pady=(8, 0))
+        tk.Label(r, text="Trees", bg=CARD, fg=INK_DIM, font=FONT_SMALL).pack(side="left")
+        ttk.Spinbox(r, from_=50, to=500, increment=50, textvariable=self.trees_var, width=6,
+                    style="Dark.TSpinbox").pack(side="left", padx=(6, 18))
+        tk.Label(r, text="Expected anomalies", bg=CARD, fg=INK_DIM, font=FONT_SMALL).pack(side="left")
+        ttk.Spinbox(r, from_=0.001, to=0.2, increment=0.005, format="%.3f", textvariable=self.cont_var, width=7,
+                    style="Dark.TSpinbox").pack(side="left", padx=6)
 
+        c2 = Card(page)
+        c2.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+        b = c2.body
+        self._card_title(b, "upload", "2 \u00B7 Telemetry log to check")
+        self.log_lbl = tk.Label(b, text="No log uploaded yet.", bg=CARD, fg=INK_DIM, font=FONT_SMALL,
+                                wraplength=420, justify="left")
+        self.log_lbl.pack(anchor="w", pady=(0, 6))
+        autowrap(c2, self.log_lbl)
+        r = tk.Frame(b, bg=CARD)
+        r.pack(fill="x", pady=4)
+        RoundButton(r, "Upload log CSV...", self.upload_log, fill=ACCENT, hover=ACCENT_HOVER, fg="white",
+                    font=FONT_BOLD, padx=16, pady=8, icon="upload").pack(side="left", padx=(0, 8))
+        RoundButton(r, "Run on log", self._run_log, fill=PANEL3, hover=LINE, padx=14, pady=8).pack(side="left")
+
+        c3 = Card(page)
+        c3.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        self._card_title(c3.body, "bars", "3 \u00B7 Health score over time")
+        self.tl = tk.Canvas(c3.body, bg="#08122a", height=250, highlightthickness=1, highlightbackground=LINE)
+        self.tl.pack(fill="x", pady=(2, 0))
+        self.tl.bind("<Configure>", lambda e: self._draw_timeline())
+
+    # ---------- About page ----------
+    def _build_about_page(self, page):
+        card = Card(page)
+        card.pack(fill="x")
+        b = card.body
+        self._card_title(b, "info", "How the score works")
+        tk.Label(b, text="Machine Learning for Autonomous Spacecraft Diagnostics", bg=CARD, fg=ACCENT_HOVER,
+                 font=FONT_BOLD).pack(anchor="w", pady=(0, 8))
+        msg = tk.Label(b, text=METHOD_TEXT, bg=CARD, fg=INK, font=FONT_B, justify="left", wraplength=900)
+        msg.pack(anchor="w")
+        autowrap(card, msg)
+        RoundButton(b, "Ranges, equations & sources", self._show_sources, fill=ACCENT, hover=ACCENT_HOVER,
+                    fg="white", font=FONT_BOLD, padx=18, pady=9).pack(anchor="w", pady=(16, 0))
+
+    # ---------- blink / helpers ----------
     def _start_blink(self):
         self._stop_blink()
 
@@ -438,14 +937,12 @@ class AstroSense(tk.Tk):
     def load_sample(self):
         for f in FIELDS:
             self.entries[f["key"]].set(f'{f["default"]}')
-        if self.nb.index(self.nb.select()) == 0:
-            self.nb.select(1)
 
     def load_fault(self):
         self.load_sample()
         for k, v in FAULT_OVERRIDES.items():
             self.entries[k].set(str(v))
-        self.nb.select(1)
+        self.nb.select(0)
 
     def clear_all(self):
         for f in FIELDS:
@@ -469,6 +966,7 @@ class AstroSense(tk.Tk):
         finally:
             self.config(cursor="")
         self.base_df, self.base_name = df, label
+        self._log_event(f"Model trained on {len(df)} healthy records.", "info")
         self.base_lbl.configure(text=f"{label}\n{len(df)} rows \u00B7 {len(df.columns)} sensors \u00B7 "
                                      f"Isolation Forest ({self.trees_var.get()} trees), Min-Max scaled")
         return True
@@ -504,11 +1002,16 @@ class AstroSense(tk.Tk):
         except Exception as e:
             messagebox.showerror("Could not read file", str(e))
             return
-        self.nb.select(0)
+        self._log_event(f"Log uploaded: {self.log_name}", "info")
         self._run_log()
 
     def run_diagnostics(self):
-        self._run_log() if self.nb.index(self.nb.select()) == 0 else self._run_manual()
+        """Data page -> uploaded log; Diagnostics page -> manual reading; Dashboard -> log if one is loaded."""
+        page = getattr(self, "page", "dashboard")
+        if page == "data" or (page == "dashboard" and self.log_raw is not None):
+            self._run_log()
+        else:
+            self._run_manual()
 
     def _run_log(self):
         if self.log_raw is None:
@@ -528,7 +1031,8 @@ class AstroSense(tk.Tk):
         self.log_lbl.configure(text=f"{self.log_name} \u00B7 {len(self.log_raw)} rows \u00B7 {dropped} broken rows removed "
                                     f"\u00B7 {len(df)} analysed")
         labels = df[tc].astype(str).tolist() if tc else [f"row {i}" for i in range(len(df))]
-        self._show(df, f"{dropped} rows dropped", t0, t1, labels, self.log_name)
+        self._show(df, f"{dropped} rows dropped", t0, t1, labels, self.log_name,
+                   clean_frac=len(df) / max(len(self.log_raw), 1))
 
     def _run_manual(self):
         row, filled = {}, 0
@@ -539,9 +1043,10 @@ class AstroSense(tk.Tk):
         if filled == 0:
             messagebox.showinfo("No readings", "Enter at least one reading first.")
             return
-        self._show(pd.DataFrame([row]), f"{filled}/{len(self.det.cols)} fields", None, None, ["this reading"])
+        self._show(pd.DataFrame([row]), f"{filled}/{len(self.det.cols)} fields", None, None, ["this reading"],
+                   clean_frac=filled / len(self.det.cols))
 
-    def _show(self, df, quality, t0, t1, labels, source="this reading"):
+    def _show(self, df, quality, t0, t1, labels, source="this reading", clean_frac=1.0):
         health, flagged, z = self.det.score(df)
         n, frac = len(df), float(flagged.mean())
         overall = int(round(health.mean() if n < 30 else health.mean() * (1 - frac)))
@@ -549,31 +1054,34 @@ class AstroSense(tk.Tk):
         is_anom = bool(flagged.any()) if n < 30 else frac > 0.03
         items = self.det.explain(flagged, z) if flagged.any() else []
         color = OK if overall >= 80 else (WARN if overall >= 55 else DANGER)
+        nflag = int(flagged.sum())
+        self.processed += n
 
+        # ---- Diagnostics page: status card, gauge, stats
         self.gauge.animate_to(overall, color)
-        bg = DANGER_BG if is_anom else PANEL2
-        self.status_card.configure(bg=bg, highlightbackground=DANGER if is_anom else OK)
+        bg = DANGER_BG if is_anom else CARD
+        self.status_card.recolor(bg, DANGER if is_anom else OK)
         for w in (self.status_dot, self.status_title, self.status_sub):
             w.configure(bg=bg)
         self.status_title.configure(text="Anomaly detected" if is_anom else "No anomaly detected", fg=DANGER if is_anom else OK)
-        self.status_sub.configure(text=f"{int(flagged.sum())} of {n} record(s) deviate from the learned healthy pattern."
+        self.status_sub.configure(text=f"{nflag} of {n} record(s) deviate from the learned healthy pattern."
                                   if is_anom else "Data matches the learned healthy pattern.")
         self._stop_blink()
         self._start_blink() if is_anom else self._set_dot(OK)
         self.stat_health.configure(text="ANOMALOUS" if is_anom else "NOMINAL", fg=DANGER if is_anom else OK)
-        self.stat_flags.configure(text=f"{int(flagged.sum())} / {n}")
+        self.stat_flags.configure(text=f"{nflag} / {n}")
         self.stat_quality.configure(text=quality)
 
         if t0 is not None:
             self._tl = (np.asarray(health), np.asarray(flagged), t0, t1)
             self._draw_timeline()
 
-        # warning checklist
+        # ---- warning checklist
         for w in self.chk_box.winfo_children():
             w.destroy()
         if not items:
-            tk.Label(self.chk_box, text="No warnings \u2014 all systems nominal.", bg=BG, fg=OK, font=FONT_B).pack(anchor="w")
-        for col, cnt, mz in items[:6]:
+            tk.Label(self.chk_box, text="No warnings \u2014 all systems nominal.", bg=CARD, fg=OK, font=FONT_B).pack(anchor="w")
+        for col, cnt, mz in items[:5]:
             c = DANGER if abs(mz) >= 4 else WARN
             r = tk.Frame(self.chk_box, bg=DANGER_BG)
             r.pack(fill="x", pady=3)
@@ -583,28 +1091,20 @@ class AstroSense(tk.Tk):
             lab.pack(side="left", fill="x")
             lab.bind("<Button-1>", lambda e, l=lab: l.configure(
                 text=("\u2611" if l.cget("text")[0] == "\u2610" else "\u2610") + l.cget("text")[1:]))
-        if len(items) > 6:
-            tk.Label(self.chk_box, text=f"\u2026and {len(items) - 6} more", bg=BG, fg=INK_DIM, font=FONT_SMALL).pack(anchor="w")
+        if len(items) > 5:
+            tk.Label(self.chk_box, text=f"\u2026and {len(items) - 5} more", bg=CARD, fg=INK_DIM, font=FONT_SMALL).pack(anchor="w")
 
-        # subsystem status
+        # ---- subsystem status (dashboard)
         gstate = {g: 0 for g, _, _ in GROUPS}
         for col, cnt, mz in items:
             if col in FBY:
                 g = FBY[col]["group"]
                 gstate[g] = max(gstate[g], 2 if abs(mz) >= 4 else 1)
-        for w in self.sub_box.winfo_children():
-            w.destroy()
-        for i, (gid, gname, icon) in enumerate(GROUPS):
+        for gid, pill in self.sub_pills.items():
             s = gstate[gid]
-            c, lab = (OK, "Normal") if s == 0 else ((WARN, "Watch") if s == 1 else (DANGER, "Fault"))
-            cell = tk.Frame(self.sub_box, bg=PANEL)
-            cell.grid(row=i // 2, column=i % 2, sticky="ew", pady=4, padx=(0, 12))
-            d = tk.Canvas(cell, width=10, height=10, bg=PANEL, highlightthickness=0)
-            d.create_oval(2, 2, 10, 10, fill=c, width=0)
-            d.pack(side="left", padx=(0, 6))
-            tk.Label(cell, text=gname, bg=PANEL, fg=INK, font=FONT_SMALL).pack(side="left")
-            tk.Label(cell, text=lab, bg=PANEL, fg=c, font=("Segoe UI", 9, "bold")).pack(side="right")
+            pill.set(*(("Normal", OK) if s == 0 else (("Watch", WARN) if s == 1 else ("Fault", DANGER))))
 
+        # ---- insight
         if is_anom and items:
             first = labels[int(np.flatnonzero(flagged)[0])]
             text = (f"{warning_text(items[0][0], items[0][2])} is the strongest signal. First flagged at "
@@ -613,8 +1113,27 @@ class AstroSense(tk.Tk):
             text = "Unusual combination of readings detected; no single sensor stands out."
         else:
             text = f"{n} record(s) screened against the healthy baseline; nothing unusual found."
-        self.insight_frame.configure(highlightbackground=DANGER if is_anom else ACCENT)
+        self.insight_card.recolor(INSIGHT_BG, DANGER if is_anom else ACCENT)
         self.insight.configure(text=text, fg=INK)
+
+        # ---- dashboard KPIs, chart, activity
+        self.k_health.configure(text=f"{overall}%")
+        self.k_badge.set("Healthy" if overall >= 80 else ("Watch" if overall >= 55 else "Critical"), color)
+        self.k_health_bar.set(overall / 100, color)
+        self.k_data.configure(text=f"{self.processed:,}")
+        self.k_data_bar.set(clean_frac, PURPLE)
+        self.k_alert.configure(text=str(nflag), fg=(DANGER if is_anom else WARN) if nflag else INK)
+        self.k_alert_bar.set(nflag / max(n, 1), DANGER if is_anom else WARN)
+        self.k_status.configure(text="Anomalous" if is_anom else "Nominal", fg=DANGER if is_anom else OK)
+        self.k_status_bar.set(overall / 100, color)
+        self.hist = (self.hist + [(time.strftime("%H:%M:%S"), overall)])[-12:]
+        self._draw_overview()
+        if is_anom and items:
+            self._log_event(f"{nflag} of {n} record(s) flagged. {text.split(' is the strongest')[0]} is the strongest signal.", "warn")
+        elif is_anom:
+            self._log_event(f"{nflag} of {n} record(s) flagged as unusual.", "warn")
+        else:
+            self._log_event("Diagnostics completed successfully.", "ok")
 
     def _draw_timeline(self):
         c = self.tl
@@ -697,7 +1216,7 @@ class AstroSense(tk.Tk):
                                 f"Trained on {len(tr)} normal segments ({len(feats)} features).\n"
                                 f"Tested on {len(te)} held-out segments ({int(truth.sum())} anomalous).\n\n"
                                 f"Precision {p:.2f}   Recall {r:.2f}   F1 {f1:.2f}")
-            self.nb.select(0)
+            self._log_event(f"OPS-SAT-AD evaluated: precision {p:.2f}, recall {r:.2f}, F1 {f1:.2f}", "info")
             self._run_log()
         except Exception as e:
             messagebox.showerror("Could not load OPSSAT-AD", str(e))
