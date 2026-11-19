@@ -36,11 +36,13 @@ FAULT_OVERRIDES = {"engine_temp": 610, "fuel_pressure": 3.0, "gyro_drift": 0.21}
 ZERO_OK = {"thruster_flow"}   # a reading of 0 is normal (thruster not firing), so its lower limit is the hard minimum
 
 
-def limits(key):
-    """(low edge, high edge, room below, room above): nominal range and the distance from each edge to the hard limit."""
-    f = FBY[key]
+def limits(key, f=None):
+    """(low edge, high edge, room below, room above): nominal range and the distance from each edge to the hard limit.
+    f = a learned field dict (see calibrate); None = the built-in table."""
+    custom = f is not None
+    f = f or FBY[key]
     width = f["max"] - f["min"]
-    lo = f["hard_min"] if key in ZERO_OK else f["min"]
+    lo = f["hard_min"] if (key in ZERO_OK and not custom) else f["min"]
     return lo, f["max"], (lo - f["hard_min"]) or width, (f["hard_max"] - f["max"]) or width
 
 # warning text per sensor: (reading too high, reading too low)
@@ -92,6 +94,51 @@ def clean(df, cols):
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=cols)
     return df, n0 - len(df)
+
+
+# ---------------------------------------------------------------- learn ranges from the user's own healthy data
+BAD_WORDS = ("anomal", "fault", "fail", "alert", "warn", "critical", "abnormal")
+UNIT_TOKENS = {"v": "V", "w": "W", "psi": "PSI", "lps": "L/s", "c": "C", "kpa": "kPa", "pct": "%", "ppm": "ppm",
+               "degpersec": "deg/s", "rpm": "RPM", "usv": "uSv"}
+
+
+def unit_from_column(col, default=""):
+    """'Fuel_Tank_Pressure_PSI' -> 'PSI' (unit written as the last word of the column name)."""
+    return UNIT_TOKENS.get(str(col).strip().split("_")[-1].lower(), default)
+
+
+def find_labels(df):
+    """Look for a ground-truth column in an uploaded log (e.g. Anomaly_Flag, Overall_Status).
+    Returns (Series, column name) with True = anomaly, or (None, None) when the file has no labels.
+    Text columns are read by their words; a two-value number column is read as 'the rarer value = anomaly'."""
+    for c in df.columns:                                              # text status column first
+        s = df[c]
+        if pd.api.types.is_numeric_dtype(s):
+            continue
+        u = s.astype(str).str.strip().str.lower()
+        if u.nunique() <= 6 and u.str.contains("|".join(BAD_WORDS)).any():
+            return u.str.contains("|".join(BAD_WORDS)) & ~u.str.contains(r"^no\b|^not\b|^non"), c
+    for c in df.columns:                                              # then a 0/1 or 1/-1 flag column
+        s = df[c]
+        if pd.api.types.is_numeric_dtype(s) and any(w in str(c).lower() for w in ("anomal", "flag", "label", "fault", "outlier")):
+            vc = s.dropna().value_counts()
+            if len(vc) == 2 and vc.iloc[0] != vc.iloc[1]:
+                return s == vc.index[-1], c
+    return None, None
+
+
+def calibrate(df, keys, units=None, q=0.005, margin=0.15, hard=3.0):
+    """Learn each sensor's nominal band from HEALTHY rows: the 0.5-99.5 percentile range widened by 15 %.
+    The hard limit (0 % sensor health) is 3 band-widths beyond each edge. Returns {key: field dict}."""
+    bands = {}
+    for k in keys:
+        lo, hi = np.quantile(df[k].to_numpy(float), [q, 1 - q])
+        w = (hi - lo) or abs(hi) * 0.01 or 1.0
+        lo, hi = lo - margin * w, hi + margin * w
+        w = hi - lo
+        bands[k] = dict(FBY[k], min=lo, max=hi, hard_min=lo - hard * w, hard_max=hi + hard * w,
+                        unit=(units or {}).get(k) or FBY[k]["unit"], src="Learned from the healthy rows of the uploaded file.")
+    return bands
 
 
 EQUATIONS = """EQUATIONS USED
@@ -191,12 +238,17 @@ class Detector:
     z_guard = 7.0   # |z| >= 7 on any sensor also flags the record: Isolation Forest is weak on single-sensor faults
     band_floor = 0.08          # sigma of a known sensor is never below 8 % of its nominal band width (stops false alarms on very steady sensors)
 
-    def fit(self, df, trees=200, contamination=0.01):
+    def field(self, c):
+        """Range data of a sensor: learned band if the detector was calibrated on a file, else the built-in table."""
+        return getattr(self, "bands", {}).get(c) or FBY.get(c)
+
+    def fit(self, df, trees=200, contamination=0.01, bands=None):
+        self.bands = bands or {}
         self.cols = list(df.columns)
         self.mean, self.std = df.mean(), df.std().replace(0, 1).fillna(1)
         for c in self.cols:                                                   # very steady sensors (e.g. cabin pressure) would
-            if c in FBY:                                                      # otherwise flag normal in-band readings
-                self.std[c] = max(self.std[c], self.band_floor * (FBY[c]["max"] - FBY[c]["min"]))
+            if self.field(c):                                                 # otherwise flag normal in-band readings
+                self.std[c] = max(self.std[c], self.band_floor * (self.field(c)["max"] - self.field(c)["min"]))
         self.scaler = MinMaxScaler().fit(df)                                  # Min-Max Scaling
         X = self.scaler.transform(df)
         self.model = IsolationForest(n_estimators=trees, contamination=contamination,
@@ -205,8 +257,8 @@ class Detector:
         self.a_thr = float(-self.model.offset_)                               # flag threshold
         self.a_ok = min(float(np.percentile(a, 95)), self.a_thr - 1e-6)       # still "fully healthy"
         span = df.max() - df.min()                                            # 0 % health = every sensor at its hard limit
-        corners = pd.DataFrame([{c: FBY[c]["hard_min"] if c in FBY else df[c].min() - span[c] for c in self.cols},
-                                {c: FBY[c]["hard_max"] if c in FBY else df[c].max() + span[c] for c in self.cols}])
+        corners = pd.DataFrame([{c: self.field(c)["hard_min"] if self.field(c) else df[c].min() - span[c] for c in self.cols},
+                                {c: self.field(c)["hard_max"] if self.field(c) else df[c].max() + span[c] for c in self.cols}])
         a_corner = float((-self.model.score_samples(self.scaler.transform(corners))).max())
         self.a_zero = a_corner if a_corner > self.a_thr + 0.05 else 1.0
 
@@ -227,8 +279,8 @@ class Detector:
         """h_i = 1 inside the nominal range, falling in a straight line to 0 at the sensor's hard limit."""
         h = pd.DataFrame(1.0, index=df.index, columns=self.cols)
         for c in self.cols:
-            if c in FBY:
-                lo, hi, room_lo, room_hi = limits(c)
+            if self.field(c):
+                lo, hi, room_lo, room_hi = limits(c, self.bands.get(c))
                 x = df[c].to_numpy(float)
                 out = np.where(x < lo, (lo - x) / room_lo, np.where(x > hi, (x - hi) / room_hi, 0.0))
                 h[c] = np.clip(1 - out, 0, 1)
@@ -273,12 +325,13 @@ class Detector:
         L.append(f"HOW THE HEALTH % WAS CALCULATED   ({source})\n")
         L.append("STEP 1 - every sensor is compared with its nominal range")
         L.append("  100 % anywhere inside the range; it falls in a straight line to 0 % at the sensor's hard limit.\n")
-        known = [c for c in self.cols if c in FBY]
+        known = [c for c in self.cols if self.field(c)]
         if n == 1:
             L.append(f"  {'Sensor':<27}{'Reading':>16}  {'Nominal range':<24}{'Where the reading is':<36}{'Health':>8}")
             for c in known:
-                x, (lo, hi, rl, rh) = float(df[c].iloc[0]), limits(c)
-                fd, u = FBY[c], FBY[c]["unit"]
+                x, (lo, hi, rl, rh) = float(df[c].iloc[0]), limits(c, self.bands.get(c))
+                fd = self.field(c)
+                u = fd["unit"]
                 where = ("inside the range" if lo <= x <= hi else
                          f"{lo - x:.3g} below (limit {rl:.3g} away)" if x < lo else f"{x - hi:.3g} above (limit {rh:.3g} away)")
                 L.append(f"  {fd['label']:<27}{f'{x:.4g} {u}':>16}  {f'{lo:g} - {hi:g} {u}':<24}{where:<36}{f(100 * d['hs'][c].iloc[0]):>8}")
@@ -294,9 +347,9 @@ class Detector:
             L.append(f"  Done for each of the {n} records; summary over all records:\n")
             L.append(f"  {'Sensor':<28}{'Records outside range':>22}{'Average sensor health':>24}")
             for c in known:
-                lo, hi, _, _ = limits(c)
+                lo, hi, _, _ = limits(c, self.bands.get(c))
                 out = int(((df[c] < lo) | (df[c] > hi)).sum())
-                L.append(f"  {FBY[c]['label']:<28}{f'{out} of {n}':>22}{f(100 * d['hs'][c].mean()):>24}")
+                L.append(f"  {self.field(c)['label']:<28}{f'{out} of {n}':>22}{f(100 * d['hs'][c].mean()):>24}")
             L.append("\nSTEP 2 - per record: sensor health = product of its sensor healths (series system)")
             L.append(f"  average over records = {f(d['h_sens'].mean())}\n")
             L.append("STEP 3 - per record: pattern health from the Isolation Forest anomaly score")
