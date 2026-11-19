@@ -252,6 +252,20 @@ class Detector:
             cnt[c], tot[c] = len(zf), zf[c].sum()
         return sorted([(c, cnt[c], tot[c] / cnt[c]) for c in cnt], key=lambda x: -x[1])
 
+    def results(self, df, health, flagged):
+        """Per-record output table for export: health score %, status and the weakest sensor.
+        Call right after score(); health / flagged are the two arrays score() returned."""
+        d = self.last
+        hs = d["hs"]
+        weakest = np.where(hs.min(axis=1).to_numpy() < 0.8, hs.idxmin(axis=1).to_numpy(), "")
+        return pd.DataFrame({
+            "health_score_pct": np.round(health, 1),                 # record health 0-100 %  (lower of the two below)
+            "sensor_health_pct": np.round(d["h_sens"], 1),           # from nominal ranges (series system)
+            "pattern_health_pct": np.round(d["h_model"], 1),         # from the Isolation Forest anomaly score
+            "status": np.where(flagged, "ANOMALY", "NOMINAL"),
+            "weakest_sensor": weakest,
+        }, index=df.index)
+
     def report(self, df, flagged, overall, source="this reading"):
         """Step-by-step working of the health % for the data last passed to score()."""
         L, n, d = [], len(df), self.last
