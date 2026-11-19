@@ -384,6 +384,8 @@ class AstroSense(tk.Tk):
         self.entries, self.scales, self._calc = {}, {}, None
         self.det, self.log_raw, self.log_name, self._tl = Detector(), None, "", None
         self._assumed, self._results = [], None
+        self._assumed_keys, self._colmap, self._last_flagged = [], {}, None
+        self.learn_mode, self.det_log, self._labels, self._label_col = False, None, None, None
         self._blink_job, self._blink_state = None, False
         self.trees_var, self.cont_var = tk.IntVar(value=200), tk.DoubleVar(value=0.01)
         self.page, self.hist, self.activity, self.processed, self._dots = "dashboard", [], [], 0, []
@@ -910,6 +912,8 @@ class AstroSense(tk.Tk):
         RoundButton(r, "Upload log CSV...", self.upload_log, fill=ACCENT, hover=ACCENT_HOVER, fg="white",
                     font=FONT_BOLD, padx=16, pady=8, icon="upload").pack(side="left", padx=(0, 8))
         RoundButton(r, "Run on log", self._run_log, fill=PANEL3, hover=LINE, padx=14, pady=8).pack(side="left", padx=(0, 8))
+        RoundButton(r, "Learn from this file", lambda: self._run_log(learn=True), fill=PANEL3, hover=LINE, padx=14,
+                    pady=8).pack(side="left", padx=(0, 8))
         RoundButton(r, "Export results CSV", self.export_results, fill=PANEL3, hover=LINE, padx=14, pady=8).pack(side="left")
 
         c3 = Card(page)
@@ -1014,7 +1018,9 @@ class AstroSense(tk.Tk):
             return
         try:
             self.log_raw, self.log_name = read_csv(path), os.path.basename(path)
-            self._assumed = []
+            self._assumed, self._assumed_keys, self._colmap = [], [], {}
+            self.learn_mode, self.det_log = False, None
+            self._labels, self._label_col = find_labels(self.log_raw)      # ground truth in the file, if any
         except Exception as e:
             messagebox.showerror("Could not read file", str(e))
             return
@@ -1065,14 +1071,19 @@ class AstroSense(tk.Tk):
             ttk.Combobox(grid, textvariable=v, values=[NONE] + [str(c) for c in cols], state="readonly",
                          width=34, style="Dark.TCombobox").grid(row=i, column=1, pady=4)
             vars_[key] = v
-        result = {"map": None}
+        result = {"map": None, "learn": True}
+        learn_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(win, text="Learn the healthy ranges from this file (recommended when its units or scales differ "
+                                 "from the built-in baseline, e.g. a 12 V bus or pressure in PSI)",
+                       variable=learn_var, bg=BG, fg=INK, selectcolor=BG, activebackground=BG, activeforeground=INK,
+                       font=FONT_SMALL, wraplength=560, justify="left", anchor="w").pack(fill="x", padx=18, pady=(12, 0))
 
         def apply():
             mapping = {k: (None if v.get() == NONE else v.get()) for k, v in vars_.items()}
             if len(missing) == len(self.det.cols) and all(m is None for m in mapping.values()):
                 messagebox.showerror("Nothing matched", "Match at least one sensor to a column of your file.", parent=win)
                 return
-            result["map"] = mapping
+            result["map"], result["learn"] = mapping, learn_var.get()
             win.destroy()
 
         br = tk.Frame(win, bg=BG)
@@ -1084,11 +1095,14 @@ class AstroSense(tk.Tk):
         if result["map"] is None:
             return False
         self._apply_mapping(result["map"])
+        self.learn_mode = result["learn"]
         return True
 
     def _apply_mapping(self, mapping):
         """mapping: sensor key -> column name of the log, or None = not in the file (assume the healthy mean)."""
         assumed = []
+        self._colmap = {k: c for k, c in mapping.items() if c}
+        self._assumed_keys = [k for k, c in mapping.items() if c is None]
         for key, col in mapping.items():
             if col is None:
                 self.log_raw[key] = float(self.det.mean[key])
@@ -1116,26 +1130,68 @@ class AstroSense(tk.Tk):
         messagebox.showinfo("Saved", f"Saved {len(out)} rows with health_score_pct, status and weakest_sensor.\n"
                                      f"System health: {overall} %")
 
-    def _run_log(self):
+    def _learn_from_log(self):
+        """Train a detector on the HEALTHY rows of the uploaded file and learn each sensor's range from them."""
+        if self.det_log is not None:
+            return True
+        keys = [c for c in self.det.cols if c not in self._assumed_keys]
+        if len(keys) < 2:
+            messagebox.showerror("Too few sensors", "Match at least two sensors to learn ranges from this file.")
+            return False
+        df, _ = clean(self.log_raw, keys)
+        healthy = df if self._labels is None else df[~self._labels.loc[df.index]]
+        if len(healthy) < 30:
+            messagebox.showerror("Too few healthy rows", "Need at least 30 healthy rows to learn from this file.")
+            return False
+        units = {k: unit_from_column(self._colmap.get(k, k)) for k in keys}
+        det = Detector()
+        det.fit(healthy[keys], trees=int(self.trees_var.get()), contamination=float(self.cont_var.get()),
+                bands=calibrate(healthy, keys, units))
+        self.det_log = det
+        basis = (f"{len(healthy)} healthy rows (labels from '{self._label_col}')" if self._labels is not None
+                 else f"all {len(healthy)} rows (no label column found)")
+        self._log_event(f"Learned ranges from this file: {len(keys)} sensors, {basis}.", "info")
+        return True
+
+    def _run_log(self, learn=None):
         if self.log_raw is None:
             messagebox.showinfo("No log", "Upload a telemetry log CSV first (Data tab).")
             return
         missing = [c for c in self.det.cols if c not in self.log_raw.columns]
         if missing and not self._map_columns(missing):      # let the user match their columns to the sensors
             return
-        df, dropped = clean(self.log_raw, self.det.cols)
+        if learn is True:                                   # "Learn from this file" button: (re)train on this file
+            self.learn_mode, self.det_log = True, None
+        det = self.det
+        if self.learn_mode:
+            if self._learn_from_log():
+                det = self.det_log
+            else:
+                self.learn_mode = False
+        df, dropped = clean(self.log_raw, det.cols)
         if df.empty:
             messagebox.showerror("Empty log", "No valid rows left after cleaning.")
             return
+        lab = self._labels.loc[df.index].to_numpy() if self._labels is not None else None
         df = df.reset_index(drop=True)
         tc = time_col(df)
         t0, t1 = (str(df[tc].iloc[0]), str(df[tc].iloc[-1])) if tc else ("row 0", f"row {len(df) - 1}")
-        self.log_lbl.configure(text=f"{self.log_name} \u00B7 {len(self.log_raw)} rows \u00B7 {dropped} broken rows removed "
-                                    f"\u00B7 {len(df)} analysed"
-                                    + (f" \u00B7 {len(self._assumed)} sensor(s) assumed nominal" if self._assumed else ""))
+        info = (f"{self.log_name} \u00B7 {len(self.log_raw)} rows \u00B7 {dropped} broken rows removed "
+                f"\u00B7 {len(df)} analysed"
+                + (f" \u00B7 {len(self._assumed)} sensor(s) assumed nominal" if self._assumed else "")
+                + (" \u00B7 ranges learned from this file" if self.learn_mode else ""))
         labels = df[tc].astype(str).tolist() if tc else [f"row {i}" for i in range(len(df))]
         self._show(df, f"{dropped} rows dropped", t0, t1, labels, self.log_name,
-                   clean_frac=len(df) / max(len(self.log_raw), 1))
+                   clean_frac=len(df) / max(len(self.log_raw), 1), det=det)
+        if lab is not None:                                 # compare with the file's own labels
+            f = self._last_flagged
+            tp, nf, nl = int((f & lab).sum()), int(f.sum()), int(lab.sum())
+            p, r = (tp / nf if nf else 0.0), (tp / nl if nl else 0.0)
+            f1 = 2 * p * r / (p + r) if p + r else 0.0
+            info += f"\nvs the file's labels ('{self._label_col}'): precision {p:.2f} \u00B7 recall {r:.2f} \u00B7 F1 {f1:.2f}"
+            self._log_event(f"Compared with the file's labels: precision {p:.2f}, recall {r:.2f}, F1 {f1:.2f} "
+                            f"({tp} of {nl} labelled anomalies found, {nf - tp} extra flags).", "info")
+        self.log_lbl.configure(text=info)
 
     def _run_manual(self):
         row, filled = {}, 0
@@ -1149,17 +1205,19 @@ class AstroSense(tk.Tk):
         self._show(pd.DataFrame([row]), f"{filled}/{len(self.det.cols)} fields", None, None, ["this reading"],
                    clean_frac=filled / len(self.det.cols))
 
-    def _show(self, df, quality, t0, t1, labels, source="this reading", clean_frac=1.0):
-        health, flagged, z = self.det.score(df)
+    def _show(self, df, quality, t0, t1, labels, source="this reading", clean_frac=1.0, det=None):
+        det = det or self.det
+        health, flagged, z = det.score(df)
+        self._last_flagged = np.asarray(flagged)
         n, frac = len(df), float(flagged.mean())
         overall = int(round(health.mean() if n < 30 else health.mean() * (1 - frac)))
-        self._calc = self.det.report(df, flagged, overall, source)
+        self._calc = det.report(df, flagged, overall, source)
         is_anom = bool(flagged.any()) if n < 30 else frac > 0.03
-        items = self.det.explain(flagged, z) if flagged.any() else []
+        items = det.explain(flagged, z) if flagged.any() else []
         color = OK if overall >= 80 else (WARN if overall >= 55 else DANGER)
         nflag = int(flagged.sum())
         self.processed += n
-        self._results = (df.copy(), self.det.results(df, health, flagged), overall)
+        self._results = (df.copy(), det.results(df, health, flagged), overall)
 
         # ---- Diagnostics page: status card, gauge, stats
         self.gauge.animate_to(overall, color)
