@@ -218,20 +218,24 @@ class Tooltip:
 class Card(tk.Canvas):
     """Rounded 'glass' panel: put children in card.body. Height follows its content."""
 
-    def __init__(self, master, bg=CARD, border=LINE, parent_bg=BG, radius=16, pad=16):
-        super().__init__(master, width=10, height=10, bg=parent_bg, highlightthickness=0)
-        self.bgc, self.border, self.radius, self.pad = bg, border, radius, pad
+    def __init__(self, master, bg=CARD, border=LINE, parent_bg=BG, radius=16, pad=16, stretch=False):
+        # initial height > pad so the body window starts inside the canvas (Tk only maps visible windows)
+        super().__init__(master, width=10, height=2 * pad + 12, bg=parent_bg, highlightthickness=0)
+        self.bgc, self.border, self.radius, self.pad, self.stretch = bg, border, radius, pad, stretch
         self.body = tk.Frame(self, bg=bg)
         self._win = self.create_window(pad, pad, window=self.body, anchor="nw")
         self.bind("<Configure>", self._on_canvas)
         self.body.bind("<Configure>", self._on_body)
 
     def _on_canvas(self, e):
-        self.itemconfigure(self._win, width=max(e.width - 2 * self.pad, 1))
+        kw = {"width": max(e.width - 2 * self.pad, 1)}
+        if self.stretch:                       # body fills the card (used by the chart / subsystem cards)
+            kw["height"] = max(e.height - 2 * self.pad, 1)
+        self.itemconfigure(self._win, **kw)
         self._redraw(e.width, e.height)
 
     def _on_body(self, e):
-        self.configure(height=e.height + 2 * self.pad)
+        self.configure(height=self.body.winfo_reqheight() + 2 * self.pad)
 
     def _redraw(self, w=None, h=None):
         w, h = w or self.winfo_width(), h or self.winfo_height()
@@ -598,12 +602,12 @@ class AstroSense(tk.Tk):
         mid.columnconfigure(0, weight=2, uniform="m")
         mid.columnconfigure(1, weight=1, uniform="m")
         mid.rowconfigure(0, weight=1)
-        ch = Card(mid)
+        ch = Card(mid, stretch=True)
         ch.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
         self._card_title(ch.body, "bars", "Telemetry Overview", link="View Details",
                          cmd=lambda: self.show_page("diagnostics"))
         self.ov = tk.Canvas(ch.body, height=OV_H, bg=CARD, highlightthickness=0)
-        self.ov.pack(fill="x")
+        self.ov.pack(fill="both", expand=True)
         self.ov.bind("<Configure>", lambda e: self._draw_overview())
         lg = tk.Frame(ch.body, bg=CARD)
         lg.pack(pady=(4, 0))
@@ -612,7 +616,7 @@ class AstroSense(tk.Tk):
         d.pack(side="left", padx=(0, 6))
         tk.Label(lg, text="Health Score", bg=CARD, fg=INK_DIM, font=FONT_SMALL).pack(side="left")
 
-        sc = Card(mid)
+        sc = Card(mid, stretch=True)
         sc.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
         self._card_title(sc.body, "chip", "Subsystem Status")
         self.sub_pills = {}
@@ -683,8 +687,8 @@ class AstroSense(tk.Tk):
     def _draw_overview(self):
         c = self.ov
         c.delete("all")
-        w, h = max(c.winfo_width(), 300), OV_H
-        pl, pr, pt, pb = 44, 18, 14, 30
+        w, h = max(c.winfo_width(), 300), max(c.winfo_height(), 160)
+        pl, pr, pt, pb = 44, 36, 14, 30
         y_of = lambda v: pt + (h - pt - pb) * (1 - v / 100)
         pts = self.hist
         n = len(pts)
@@ -740,7 +744,8 @@ class AstroSense(tk.Tk):
         br.pack(fill="x", pady=(14, 6))
         RoundButton(br, "Run Diagnostics", self.run_diagnostics, fill=ACCENT, hover=ACCENT_HOVER, fg="white",
                     font=FONT_BOLD, padx=18, pady=9, icon="play").pack(side="left", padx=(0, 10))
-        for txt, cmd in (("Nominal Sample", self.load_sample), ("Simulate Fault", self.load_fault), ("Clear", self.clear_all)):
+        for txt, cmd in (("Nominal Sample", self.load_sample), ("Simulate Fault", self.load_fault), ("Clear", self.clear_all),
+                         ("Upload Log...", self.upload_log)):
             RoundButton(br, txt, cmd, fill=PANEL3, hover=LINE, padx=14, pady=9).pack(side="left", padx=(0, 8))
         tk.Frame(b, bg=LINE, height=1).pack(fill="x", pady=(6, 8))
         ur = tk.Frame(b, bg=CARD)
@@ -777,8 +782,8 @@ class AstroSense(tk.Tk):
                  font=FONT_SMALL).pack(anchor="w")
         lo, hi = f["hard_min"], f["hard_max"]
         scale = tk.Scale(row, from_=lo, to=hi, orient="horizontal", resolution=(hi - lo) / 200, showvalue=False,
-                         bg=CARD, troughcolor=PANEL3, highlightthickness=0, bd=0, sliderrelief="flat",
-                         length=300, activebackground=ACCENT)
+                         bg=ACCENT, troughcolor=PANEL3, highlightthickness=0, bd=0, sliderrelief="flat",
+                         sliderlength=22, width=14, length=300, activebackground=ACCENT_HOVER)
         scale.pack(fill="x", pady=(4, 0))
         tk.Frame(parent, bg=LINE, height=1).pack(fill="x", padx=2, pady=(10, 0))
         busy = {"f": False}
