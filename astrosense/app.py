@@ -383,6 +383,7 @@ class AstroSense(tk.Tk):
         self.minsize(1120, 700)
         self.entries, self.scales, self._calc = {}, {}, None
         self.det, self.log_raw, self.log_name, self._tl = Detector(), None, "", None
+        self._assumed, self._results = [], None
         self._blink_job, self._blink_state = None, False
         self.trees_var, self.cont_var = tk.IntVar(value=200), tk.DoubleVar(value=0.01)
         self.page, self.hist, self.activity, self.processed, self._dots = "dashboard", [], [], 0, []
@@ -415,6 +416,13 @@ class AstroSense(tk.Tk):
         st.configure("Dark.TSpinbox", fieldbackground=BG, background=PANEL3, foreground=INK,
                      arrowcolor=INK_DIM, bordercolor=LINE, lightcolor=LINE, darkcolor=LINE,
                      insertcolor=INK, padding=3)
+        st.configure("Dark.TCombobox", fieldbackground=BG, background=PANEL3, foreground=INK,
+                     arrowcolor=INK_DIM, bordercolor=LINE, lightcolor=LINE, darkcolor=LINE, insertcolor=INK, padding=3)
+        st.map("Dark.TCombobox", fieldbackground=[("readonly", BG)], foreground=[("readonly", INK)],
+               selectbackground=[("readonly", BG)], selectforeground=[("readonly", INK)])
+        self.option_add("*TCombobox*Listbox.background", CARD2)
+        self.option_add("*TCombobox*Listbox.foreground", INK)
+        self.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
         st.configure("Vertical.TScrollbar", background=PANEL3, troughcolor=BG, bordercolor=BG,
                      arrowcolor=INK_DIM, lightcolor=PANEL3, darkcolor=PANEL3)
 
@@ -425,6 +433,7 @@ class AstroSense(tk.Tk):
         m.add_command(label="Use Built-in Baseline", command=self.use_builtin)
         m.add_command(label="Upload Telemetry Log CSV...", command=self.upload_log)
         m.add_command(label="Load OPS-SAT-AD dataset.csv (real data)...", command=self.load_opssat)
+        m.add_command(label="Export Results with Health Score (CSV)...", command=self.export_results)
         m.add_separator()
         m.add_command(label="Save Sample Files...", command=self.save_samples)
         m.add_separator()
@@ -900,7 +909,8 @@ class AstroSense(tk.Tk):
         r.pack(fill="x", pady=4)
         RoundButton(r, "Upload log CSV...", self.upload_log, fill=ACCENT, hover=ACCENT_HOVER, fg="white",
                     font=FONT_BOLD, padx=16, pady=8, icon="upload").pack(side="left", padx=(0, 8))
-        RoundButton(r, "Run on log", self._run_log, fill=PANEL3, hover=LINE, padx=14, pady=8).pack(side="left")
+        RoundButton(r, "Run on log", self._run_log, fill=PANEL3, hover=LINE, padx=14, pady=8).pack(side="left", padx=(0, 8))
+        RoundButton(r, "Export results CSV", self.export_results, fill=PANEL3, hover=LINE, padx=14, pady=8).pack(side="left")
 
         c3 = Card(page)
         c3.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
@@ -1004,6 +1014,7 @@ class AstroSense(tk.Tk):
             return
         try:
             self.log_raw, self.log_name = read_csv(path), os.path.basename(path)
+            self._assumed = []
         except Exception as e:
             messagebox.showerror("Could not read file", str(e))
             return
@@ -1018,13 +1029,99 @@ class AstroSense(tk.Tk):
         else:
             self._run_manual()
 
+    # ---------- match the columns of a user's log to the sensors ----------
+    def _guess_column(self, key, cols):
+        import difflib
+        names = {norm(c): c for c in cols}
+        for t in (norm(key), norm(FBY[key]["label"])):
+            m = difflib.get_close_matches(t, list(names), n=1, cutoff=0.6)
+            if m:
+                return names[m[0]]
+        return None
+
+    def _map_columns(self, missing):
+        """Dialog: pick which column of the uploaded file is which sensor. Returns True when applied."""
+        tc = time_col(self.log_raw)
+        cols = [c for c in self.log_raw.columns if c != tc]
+        NONE = "(not in my file \u2014 assume nominal)"
+        win = tk.Toplevel(self, bg=BG)
+        win.title("Match log columns to sensors")
+        win.transient(self)
+        win.grab_set()
+        tk.Label(win, text="Your log doesn't use AstroSense's column names", bg=BG, fg=INK,
+                 font=FONT_H).pack(anchor="w", padx=22, pady=(18, 2))
+        tk.Label(win, text="Pick the column of your file for each sensor (values must be in the unit shown). "
+                           "A sensor your file doesn't have is assumed nominal (its typical healthy value).",
+                 bg=BG, fg=INK_DIM, font=FONT_SMALL, justify="left", wraplength=560).pack(anchor="w", padx=22, pady=(0, 10))
+        grid = tk.Frame(win, bg=BG)
+        grid.pack(fill="x", padx=22)
+        grid.columnconfigure(0, weight=1)
+        vars_ = {}
+        for i, key in enumerate(missing):
+            f = FBY[key]
+            tk.Label(grid, text=f'{f["label"]}  ({f["unit"]})', bg=BG, fg=INK, font=FONT_B).grid(
+                row=i, column=0, sticky="w", pady=4, padx=(0, 14))
+            v = tk.StringVar(value=self._guess_column(key, cols) or NONE)
+            ttk.Combobox(grid, textvariable=v, values=[NONE] + [str(c) for c in cols], state="readonly",
+                         width=34, style="Dark.TCombobox").grid(row=i, column=1, pady=4)
+            vars_[key] = v
+        result = {"map": None}
+
+        def apply():
+            mapping = {k: (None if v.get() == NONE else v.get()) for k, v in vars_.items()}
+            if len(missing) == len(self.det.cols) and all(m is None for m in mapping.values()):
+                messagebox.showerror("Nothing matched", "Match at least one sensor to a column of your file.", parent=win)
+                return
+            result["map"] = mapping
+            win.destroy()
+
+        br = tk.Frame(win, bg=BG)
+        br.pack(fill="x", padx=22, pady=16)
+        RoundButton(br, "Apply and run", apply, fill=ACCENT, hover=ACCENT_HOVER, fg="white", font=FONT_BOLD,
+                    padx=18, pady=9, parent_bg=BG).pack(side="left", padx=(0, 10))
+        RoundButton(br, "Cancel", win.destroy, fill=PANEL3, hover=LINE, padx=16, pady=9, parent_bg=BG).pack(side="left")
+        self.wait_window(win)
+        if result["map"] is None:
+            return False
+        self._apply_mapping(result["map"])
+        return True
+
+    def _apply_mapping(self, mapping):
+        """mapping: sensor key -> column name of the log, or None = not in the file (assume the healthy mean)."""
+        assumed = []
+        for key, col in mapping.items():
+            if col is None:
+                self.log_raw[key] = float(self.det.mean[key])
+                assumed.append(FBY[key]["label"])
+            else:
+                self.log_raw[key] = self.log_raw[col]
+        self._assumed = assumed
+        self._log_event(f"Log columns matched to sensors ({len(mapping) - len(assumed)} matched, "
+                        f"{len(assumed)} assumed nominal).", "info")
+
+    def export_results(self):
+        """Save the analysed rows plus the health score % of each record (and the overall system health)."""
+        if not self._results:
+            messagebox.showinfo("Nothing to export", "Run diagnostics first.")
+            return
+        df, res, overall = self._results
+        path = filedialog.asksaveasfilename(title="Save results with health score", defaultextension=".csv",
+                                            initialfile="astrosense_results.csv", filetypes=[("CSV", "*.csv")])
+        if not path:
+            return
+        out = pd.concat([df.reset_index(drop=True), res.reset_index(drop=True)], axis=1)
+        out["system_health_pct"] = overall
+        out.to_csv(path, index=False)
+        self._log_event(f"Results saved: {os.path.basename(path)} (system health {overall} %).", "info")
+        messagebox.showinfo("Saved", f"Saved {len(out)} rows with health_score_pct, status and weakest_sensor.\n"
+                                     f"System health: {overall} %")
+
     def _run_log(self):
         if self.log_raw is None:
             messagebox.showinfo("No log", "Upload a telemetry log CSV first (Data tab).")
             return
         missing = [c for c in self.det.cols if c not in self.log_raw.columns]
-        if missing:
-            messagebox.showerror("Missing columns", "The log has no column for: " + ", ".join(missing))
+        if missing and not self._map_columns(missing):      # let the user match their columns to the sensors
             return
         df, dropped = clean(self.log_raw, self.det.cols)
         if df.empty:
@@ -1034,7 +1131,8 @@ class AstroSense(tk.Tk):
         tc = time_col(df)
         t0, t1 = (str(df[tc].iloc[0]), str(df[tc].iloc[-1])) if tc else ("row 0", f"row {len(df) - 1}")
         self.log_lbl.configure(text=f"{self.log_name} \u00B7 {len(self.log_raw)} rows \u00B7 {dropped} broken rows removed "
-                                    f"\u00B7 {len(df)} analysed")
+                                    f"\u00B7 {len(df)} analysed"
+                                    + (f" \u00B7 {len(self._assumed)} sensor(s) assumed nominal" if self._assumed else ""))
         labels = df[tc].astype(str).tolist() if tc else [f"row {i}" for i in range(len(df))]
         self._show(df, f"{dropped} rows dropped", t0, t1, labels, self.log_name,
                    clean_frac=len(df) / max(len(self.log_raw), 1))
@@ -1061,6 +1159,7 @@ class AstroSense(tk.Tk):
         color = OK if overall >= 80 else (WARN if overall >= 55 else DANGER)
         nflag = int(flagged.sum())
         self.processed += n
+        self._results = (df.copy(), self.det.results(df, health, flagged), overall)
 
         # ---- Diagnostics page: status card, gauge, stats
         self.gauge.animate_to(overall, color)
